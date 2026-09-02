@@ -38,9 +38,44 @@ export default function MathLensApp() {
   useEffect(() => { let channel: ReturnType<typeof supabase.channel> | undefined; const load = async () => { await supabase.auth.getSession(); const { data } = await supabase.from('mathlens_students').select('id,student_id,name,group_name,score,streak,answered_current_round,last_answer_correct').eq('session_id', sessionId).order('score', { ascending: false }); if (data) setStudents(data as Student[]); channel = supabase.channel(`mathlens-${sessionId}`).on('postgres_changes', { event: '*', schema: 'public', table: 'mathlens_students', filter: `session_id=eq.${sessionId}` }, async () => { const { data: refreshed } = await supabase.from('mathlens_students').select('id,student_id,name,group_name,score,streak,answered_current_round,last_answer_correct').eq('session_id', sessionId).order('score', { ascending: false }); if (refreshed) setStudents(refreshed as Student[]) }).subscribe() }; load(); return () => { if (channel) supabase.removeChannel(channel) } }, [supabase])
   const startCamera = async () => { try { setCameraError(''); const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false }); if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play() }; setCameraOn(true) } catch { setCameraError('No se pudo abrir la cámara. Revisa el permiso del navegador.') } }
   const stopCamera = () => { const stream = videoRef.current?.srcObject as MediaStream | null; stream?.getTracks().forEach(t => t.stop()); if (videoRef.current) videoRef.current.srcObject = null; setCameraOn(false) }
-  const detectAndSetFigure = (width: number, height: number) => { const ratio = width / Math.max(1, height); const detected: Figure = ratio > 1.55 ? 'rectangle' : ratio < 0.82 ? 'triangle' : 'circle'; setFigure(detected); return detected }
-  const captureFigure = () => { const video = videoRef.current; const canvas = canvasRef.current; if (!video || !canvas) return; canvas.width = video.videoWidth; canvas.height = video.videoHeight; const ctx = canvas.getContext('2d'); if (!ctx) return; ctx.drawImage(video, 0, 0); setPhoto(canvas.toDataURL('image/jpeg', 0.8)); detectAndSetFigure(video.videoWidth, video.videoHeight); stopCamera() }
-  const uploadFigure = (file: File) => { const url = URL.createObjectURL(file); setPhoto(url); const image = new Image(); image.onload = () => detectAndSetFigure(image.naturalWidth, image.naturalHeight); image.src = url }
+  // Heurística ligera para figuras dibujadas con buen contraste; no es reconocimiento de objetos complejos.
+  const detectAndSetFigure = (sourceCanvas: HTMLCanvasElement): Figure => {
+    const size = 100
+    const analysisCanvas = document.createElement('canvas')
+    analysisCanvas.width = size
+    analysisCanvas.height = size
+    const analysisContext = analysisCanvas.getContext('2d', { willReadFrequently: true })
+    if (!analysisContext || sourceCanvas.width === 0 || sourceCanvas.height === 0) { setFigure('unknown'); return 'unknown' }
+    analysisContext.drawImage(sourceCanvas, 0, 0, size, size)
+    const pixels = analysisContext.getImageData(0, 0, size, size).data
+    const grays: number[] = []
+    for (let i = 0; i < pixels.length; i += 4) grays.push(0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2])
+    const mean = grays.reduce((sum, value) => sum + value, 0) / grays.length
+    const variance = grays.reduce((sum, value) => sum + (value - mean) ** 2, 0) / grays.length
+    if (variance < 180) { setFigure('unknown'); return 'unknown' }
+    const thresholds = [mean - 24, mean + 24]
+    let best: { extent: number; contrast: number; count: number; minX: number; minY: number; maxX: number; maxY: number } | null = null
+    for (const threshold of thresholds) {
+      const dark = threshold < mean
+      const mask = grays.map(value => dark ? value < threshold : value > threshold)
+      const points = mask.flatMap((isObject, index) => isObject ? [{ x: index % size, y: Math.floor(index / size) }] : [])
+      if (points.length < 80 || points.length > 6500) continue
+      const minX = Math.min(...points.map(point => point.x)); const maxX = Math.max(...points.map(point => point.x)); const minY = Math.min(...points.map(point => point.y)); const maxY = Math.max(...points.map(point => point.y))
+      const boxArea = (maxX - minX + 1) * (maxY - minY + 1)
+      // Extent = píxeles de la silueta dentro del bounding box / área del bounding box.
+      // Un círculo ronda π/4 (0.78), un rectángulo se acerca a 1 y un triángulo a 0.50.
+      const extent = points.length / boxArea
+      const contrast = Math.abs(mean - threshold)
+      if (!best || contrast > best.contrast) best = { extent, contrast, count: points.length, minX, minY, maxX, maxY }
+    }
+    if (!best || best.contrast < 24) { setFigure('unknown'); return 'unknown' }
+    const references: [Figure, number][] = [['circle', 0.78], ['rectangle', 0.94], ['triangle', 0.5]]
+    const detected = references.reduce((closest, current) => Math.abs(current[1] - best!.extent) < Math.abs(closest[1] - best!.extent) ? current : closest)[0]
+    setFigure(detected)
+    return detected
+  }
+  const captureFigure = () => { const video = videoRef.current; const canvas = canvasRef.current; if (!video || !canvas) return; canvas.width = video.videoWidth; canvas.height = video.videoHeight; const ctx = canvas.getContext('2d'); if (!ctx) return; ctx.drawImage(video, 0, 0); setPhoto(canvas.toDataURL('image/jpeg', 0.8)); detectAndSetFigure(canvas); stopCamera() }
+  const uploadFigure = (file: File) => { const url = URL.createObjectURL(file); setPhoto(url); const image = new Image(); image.onload = () => { const canvas = canvasRef.current; if (!canvas) return; canvas.width = image.naturalWidth; canvas.height = image.naturalHeight; const context = canvas.getContext('2d'); if (!context) return; context.drawImage(image, 0, 0); detectAndSetFigure(canvas); URL.revokeObjectURL(url) }; image.src = url }
   const publishTeacherQuestion = async () => { if (!teacherQuestion.trim() || figure === 'unknown') return; setPublishedFigure(figure); setTeacherPublished(true); await supabase.from('mathlens_sessions').update({ status: 'active', current_round: Date.now() }).eq('session_id', sessionId) }
   const joinClass = async () => { if (!name.trim()) return; const { error } = await supabase.from('mathlens_students').upsert({ session_id: sessionId, student_id: studentId, name: name.trim(), group_name: 'Equipo azul' }, { onConflict: 'session_id,student_id' }); if (!error) setJoined(true) }
   const answer = async (choice: number) => { if (answered !== null) return; setAnswered(choice); const correct = choice === active.trivia.answer; const nextScore = score + (correct ? 100 : 0); const nextStreak = correct ? streak + 1 : 0; setScore(nextScore); setStreak(nextStreak); if (joined) await supabase.from('mathlens_students').update({ score: nextScore, streak: nextStreak, answered_current_round: true, last_answer_correct: correct }).eq('session_id', sessionId).eq('student_id', studentId) }
