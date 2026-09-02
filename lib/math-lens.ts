@@ -1,4 +1,4 @@
-import { compile } from 'mathjs'
+import { compile, type EvalFunction } from 'mathjs'
 
 export type Difficulty = 'Fácil' | 'Medio' | 'Difícil'
 export type MathFunction = {
@@ -22,9 +22,16 @@ export const functions: MathFunction[] = [
   { id: 'radical', title: 'Ruptura radical', expression: 'sqrt(x^2 + y^2 - 4) / (x - y)', difficulty: 'Difícil', domain: 'Exterior del círculo r ≥ 2; x ≠ y', range: 'Variable · discontinuo', hint: 'Hay dos restricciones: el radicando y la diagonal x = y.', color: '#c084fc', trivia: { question: '¿Qué dos restricciones aparecen?', options: ['Raíz y denominador', 'Solo una raíz', 'Ninguna'], answer: 0, explanation: 'La raíz exige r² ≥ 4 y el denominador exige x − y ≠ 0.' } },
 ]
 
+const compiledCache = new Map<string, EvalFunction>()
+function getCompiled(expression: string): EvalFunction {
+  let fn = compiledCache.get(expression)
+  if (!fn) { fn = compile(expression) as EvalFunction; compiledCache.set(expression, fn) }
+  return fn
+}
+
 export function evaluateExpression(expression: string, x: number, y: number) {
   try {
-    const value = compile(expression).evaluate({ x, y })
+    const value = getCompiled(expression).evaluate({ x, y })
     return typeof value === 'number' && Number.isFinite(value) ? value : null
   } catch { return null }
 }
@@ -46,7 +53,23 @@ export function sampleSurface(expression: string, size = 18, span = 3.2) {
 }
 
 export function intersectionCurve(expression: string, k: number) {
-  const points: number[] = []
-  for (let i = 0; i < 160; i++) { const x = -3.1 + (i / 159) * 6.2; let lastY = -3.1; let last = evaluateExpression(expression, x, lastY); for (let j = 1; j <= 70; j++) { const y = -3.1 + (j/70)*6.2, v = evaluateExpression(expression,x,y); if (last !== null && v !== null && (last-k)*(v-k) <= 0) { points.push(x, y, k*0.42 + 0.02) ; break }; last=v; lastY=y } }
-  return points
+  const upper: number[] = []
+  const lower: number[] = []
+  const steps = 160, scan = 70
+  for (let i = 0; i <= steps; i++) {
+    const x = -3.1 + (i / steps) * 6.2
+    const crossings: number[] = []
+    let last = evaluateExpression(expression, x, -3.1)
+    for (let j = 1; j <= scan; j++) {
+      const y = -3.1 + (j / scan) * 6.2
+      const v = evaluateExpression(expression, x, y)
+      if (last !== null && v !== null && (last - k) * (v - k) <= 0) crossings.push(y)
+      last = v
+    }
+    if (crossings.length > 0) {
+      upper.push(x, crossings[0], k * 0.42 + 0.02)
+      if (crossings.length > 1) lower.push(x, crossings[crossings.length - 1], k * 0.42 + 0.02)
+    }
+  }
+  return { upper, lower }
 }
