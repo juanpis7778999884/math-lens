@@ -32,7 +32,7 @@ const levels: { label: Difficulty; count: number }[] = [{ label: 'Fácil', count
 
 export default function MathLensApp() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), [])
-  const videoRef = useRef<HTMLVideoElement>(null); const canvasRef = useRef<HTMLCanvasElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null); const canvasRef = useRef<HTMLCanvasElement>(null); const streamRef = useRef<MediaStream | null>(null)
   const [mode, setMode] = useState<'student' | 'teacher'>('student'); const [cameraOn, setCameraOn] = useState(false); const [photo, setPhoto] = useState<string | null>(null); const [figure, setFigure] = useState<Figure>('unknown'); const [cameraError, setCameraError] = useState('')
   const [level, setLevel] = useState<Difficulty>('Fácil'); const [index, setIndex] = useState(0); const [k, setK] = useState(3); const [teacherQuestion, setTeacherQuestion] = useState(''); const [publishedFigure, setPublishedFigure] = useState<Figure>('unknown'); const [teacherPublished, setTeacherPublished] = useState(false); const [open, setOpen] = useState(false); const [cameraOpen, setCameraOpen] = useState(false); const [modal, setModal] = useState(false); const [answered, setAnswered] = useState<number | null>(null); const [score, setScore] = useState(0); const [streak, setStreak] = useState(0); const [name, setName] = useState(''); const [group, setGroup] = useState(''); const [joined, setJoined] = useState(false); const [session, setSession] = useState<SessionRow | null>(null); const [students, setStudents] = useState<Student[]>([]); const [copied, setCopied] = useState(false); const sessionId = 'clase-hoy'; const studentId = useMemo(() => { const key = 'mathlens-student-id'; const old = typeof window !== 'undefined' ? localStorage.getItem(key) : null; if (old) return old; const value = crypto.randomUUID(); if (typeof window !== 'undefined') localStorage.setItem(key, value); return value }, [])
   const active = figure !== 'unknown' ? figureInfo[figure] : functions.filter(f => f.difficulty === level)[index % 2]
@@ -71,8 +71,11 @@ export default function MathLensApp() {
     void channel.subscribe()
     return () => { cancelled = true; void supabase.removeChannel(channel) }
   }, [supabase])
-  const startCamera = async () => { try { setCameraError(''); const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false }); if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play() }; setCameraOn(true) } catch { setCameraError('No se pudo abrir la cámara. Revisa el permiso del navegador.') } }
-  const stopCamera = () => { const stream = videoRef.current?.srcObject as MediaStream | null; stream?.getTracks().forEach(t => t.stop()); if (videoRef.current) videoRef.current.srcObject = null; setCameraOn(false) }
+  const startCamera = async () => { try { setCameraError(''); const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false }); streamRef.current = stream; setCameraOn(true) } catch { setCameraError('No se pudo abrir la cámara. Revisa el permiso del navegador.') } }
+  // El <video> solo existe en el DOM una vez cameraOn es true; conectamos el stream aquí,
+  // después de que React ya lo montó, en vez de intentarlo antes de que exista.
+  useEffect(() => { if (cameraOn && videoRef.current && streamRef.current) { videoRef.current.srcObject = streamRef.current; videoRef.current.play().catch(() => {}) } }, [cameraOn])
+  const stopCamera = () => { streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null; if (videoRef.current) videoRef.current.srcObject = null; setCameraOn(false) }
   // Heurística ligera para figuras dibujadas con buen contraste; no es reconocimiento de objetos complejos.
   const detectAndSetFigure = (sourceCanvas: HTMLCanvasElement): Figure => {
     const size = 100
