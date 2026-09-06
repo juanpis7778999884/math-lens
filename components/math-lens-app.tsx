@@ -105,12 +105,35 @@ export default function MathLensApp() {
     const variance = grays.reduce((sum, value) => sum + (value - mean) ** 2, 0) / grays.length
     if (variance < 180) { setFigure('unknown'); return 'unknown' }
     const thresholds = [mean - 24, mean + 24]
+    // Rellena el interior de un contorno cerrado: hace flood-fill del FONDO
+    // desde los bordes del recorte. Todo lo que no se alcance (encerrado por
+    // la silueta, ya sea un objeto real o solo el trazo de un dibujo) se suma
+    // a la máscara. Así un círculo dibujado con lápiz (solo el contorno) se
+    // trata igual que un círculo sólido fotografiado.
+    const fillEnclosed = (mask: boolean[]): boolean[] => {
+      const reached = new Array(size * size).fill(false)
+      const stack: number[] = []
+      for (let x = 0; x < size; x++) { stack.push(x, (size - 1) * size + x) }
+      for (let y = 0; y < size; y++) { stack.push(y * size, y * size + size - 1) }
+      while (stack.length) {
+        const index = stack.pop()!
+        if (index < 0 || index >= size * size || reached[index] || mask[index]) continue
+        reached[index] = true
+        const x = index % size; const y = Math.floor(index / size)
+        if (x > 0) stack.push(index - 1)
+        if (x < size - 1) stack.push(index + 1)
+        if (y > 0) stack.push(index - size)
+        if (y < size - 1) stack.push(index + size)
+      }
+      return mask.map((isObject, index) => isObject || !reached[index])
+    }
     let best: { extent: number; contrast: number; count: number; minX: number; minY: number; maxX: number; maxY: number } | null = null
     for (const threshold of thresholds) {
       const dark = threshold < mean
-      const mask = grays.map(value => dark ? value < threshold : value > threshold)
+      const rawMask = grays.map(value => dark ? value < threshold : value > threshold)
+      const mask = fillEnclosed(rawMask)
       const points = mask.flatMap((isObject, index) => isObject ? [{ x: index % size, y: Math.floor(index / size) }] : [])
-      if (points.length < 80 || points.length > 6500) continue
+      if (points.length < 80 || points.length > 9200) continue
       const minX = Math.min(...points.map(point => point.x)); const maxX = Math.max(...points.map(point => point.x)); const minY = Math.min(...points.map(point => point.y)); const maxY = Math.max(...points.map(point => point.y))
       const boxArea = (maxX - minX + 1) * (maxY - minY + 1)
       // Extent = píxeles de la silueta dentro del bounding box / área del bounding box.
