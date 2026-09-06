@@ -83,7 +83,7 @@ export default function MathLensApp() {
   const stopCamera = () => { streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null; if (videoRef.current) videoRef.current.srcObject = null; setCameraOn(false) }
   // Heurística ligera para figuras dibujadas con buen contraste; no es reconocimiento de objetos complejos.
   const detectAndSetFigure = (sourceCanvas: HTMLCanvasElement): Figure => {
-    const size = 100
+    const size = 120
     const analysisCanvas = document.createElement('canvas')
     analysisCanvas.width = size
     analysisCanvas.height = size
@@ -99,52 +99,126 @@ export default function MathLensApp() {
     const cropY = (sourceCanvas.height - cropH) / 2
     analysisContext.drawImage(sourceCanvas, cropX, cropY, cropW, cropH, 0, 0, size, size)
     const pixels = analysisContext.getImageData(0, 0, size, size).data
-    const grays: number[] = []
-    for (let i = 0; i < pixels.length; i += 4) grays.push(0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2])
+    const grays = new Float32Array(size * size)
+    for (let i = 0; i < pixels.length; i += 4) grays[i / 4] = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2]
     const mean = grays.reduce((sum, value) => sum + value, 0) / grays.length
     const variance = grays.reduce((sum, value) => sum + (value - mean) ** 2, 0) / grays.length
-    if (variance < 180) { setFigure('unknown'); return 'unknown' }
-    const thresholds = [mean - 24, mean + 24]
-    // Rellena el interior de un contorno cerrado: hace flood-fill del FONDO
-    // desde los bordes del recorte. Todo lo que no se alcance (encerrado por
-    // la silueta, ya sea un objeto real o solo el trazo de un dibujo) se suma
-    // a la máscara. Así un círculo dibujado con lápiz (solo el contorno) se
-    // trata igual que un círculo sólido fotografiado.
-    const fillEnclosed = (mask: boolean[]): boolean[] => {
-      const reached = new Array(size * size).fill(false)
-      const stack: number[] = []
-      for (let x = 0; x < size; x++) { stack.push(x, (size - 1) * size + x) }
-      for (let y = 0; y < size; y++) { stack.push(y * size, y * size + size - 1) }
-      while (stack.length) {
-        const index = stack.pop()!
-        if (index < 0 || index >= size * size || reached[index] || mask[index]) continue
-        reached[index] = true
-        const x = index % size; const y = Math.floor(index / size)
-        if (x > 0) stack.push(index - 1)
-        if (x < size - 1) stack.push(index + 1)
-        if (y > 0) stack.push(index - size)
-        if (y < size - 1) stack.push(index + size)
+    if (variance < 120) { setFigure('unknown'); return 'unknown' }
+
+    // --- Paso 1: bordes con Sobel ---
+    // En vez de separar objeto/fondo por brillo absoluto (que se rompe con
+    // reflejos, superficies metálicas o degradados), buscamos dónde el brillo
+    // CAMBIA bruscamente: eso marca el contorno real del objeto sin importar
+    // que por dentro tenga zonas claras y oscuras (como un reflejo en una lata).
+    const gx = [-1, 0, 1, -2, 0, 2, -1, 0, 1]
+    const gy = [-1, -2, -1, 0, 0, 0, 1, 2, 1]
+    const edges = new Float32Array(size * size)
+    let maxEdge = 0
+    for (let y = 1; y < size - 1; y++) {
+      for (let x = 1; x < size - 1; x++) {
+        let sx = 0; let sy = 0; let k = 0
+        for (let ky = -1; ky <= 1; ky++) for (let kx = -1; kx <= 1; kx++) { const v = grays[(y + ky) * size + (x + kx)]; sx += v * gx[k]; sy += v * gy[k]; k++ }
+        const mag = Math.sqrt(sx * sx + sy * sy)
+        edges[y * size + x] = mag
+        if (mag > maxEdge) maxEdge = mag
       }
-      return mask.map((isObject, index) => isObject || !reached[index])
     }
-    let best: { extent: number; contrast: number; count: number; minX: number; minY: number; maxX: number; maxY: number } | null = null
-    for (const threshold of thresholds) {
-      const dark = threshold < mean
-      const rawMask = grays.map(value => dark ? value < threshold : value > threshold)
-      const mask = fillEnclosed(rawMask)
-      const points = mask.flatMap((isObject, index) => isObject ? [{ x: index % size, y: Math.floor(index / size) }] : [])
-      if (points.length < 80 || points.length > 9200) continue
-      const minX = Math.min(...points.map(point => point.x)); const maxX = Math.max(...points.map(point => point.x)); const minY = Math.min(...points.map(point => point.y)); const maxY = Math.max(...points.map(point => point.y))
-      const boxArea = (maxX - minX + 1) * (maxY - minY + 1)
-      // Extent = píxeles de la silueta dentro del bounding box / área del bounding box.
-      // Un círculo ronda π/4 (0.78), un rectángulo se acerca a 1 y un triángulo a 0.50.
-      const extent = points.length / boxArea
-      const contrast = Math.abs(mean - threshold)
-      if (!best || contrast > best.contrast) best = { extent, contrast, count: points.length, minX, minY, maxX, maxY }
+    if (maxEdge < 60) { setFigure('unknown'); return 'unknown' }
+    const edgeThreshold = Math.max(45, maxEdge * 0.16)
+    let edgeMask: boolean[] = new Array(size * size)
+    for (let i = 0; i < edges.length; i++) edgeMask[i] = edges[i] > edgeThreshold
+    // Dilata 1px para cerrar micro-huecos del contorno (ruido, reflejos puntuales).
+    const dilate = (mask: boolean[]): boolean[] => {
+      const out = new Array(size * size).fill(false)
+      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+        const i = y * size + x
+        if (!mask[i]) continue
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const ny = y + dy; const nx = x + dx
+          if (ny >= 0 && ny < size && nx >= 0 && nx < size) out[ny * size + nx] = true
+        }
+      }
+      return out
     }
-    if (!best || best.contrast < 24) { setFigure('unknown'); return 'unknown' }
-    const references: [Figure, number][] = [['circle', 0.78], ['rectangle', 0.94], ['triangle', 0.5]]
-    const detected = references.reduce((closest, current) => Math.abs(current[1] - best!.extent) < Math.abs(closest[1] - best!.extent) ? current : closest)[0]
+    edgeMask = dilate(edgeMask)
+
+    // --- Paso 2: relleno del interior ---
+    // Flood-fill del fondo desde los bordes del recorte, bloqueado por los
+    // bordes detectados. Lo que queda "encerrado" es el objeto completo,
+    // sin importar si su brillo interno es uniforme o no.
+    const reached = new Array(size * size).fill(false)
+    const stack: number[] = []
+    for (let x = 0; x < size; x++) stack.push(x, (size - 1) * size + x)
+    for (let y = 0; y < size; y++) stack.push(y * size, y * size + size - 1)
+    while (stack.length) {
+      const index = stack.pop()!
+      if (index < 0 || index >= size * size || reached[index] || edgeMask[index]) continue
+      reached[index] = true
+      const x = index % size; const y = Math.floor(index / size)
+      if (x > 0) stack.push(index - 1)
+      if (x < size - 1) stack.push(index + 1)
+      if (y > 0) stack.push(index - size)
+      if (y < size - 1) stack.push(index + size)
+    }
+    const filled = edgeMask.map((isEdge, index) => isEdge || !reached[index])
+    const points = filled.flatMap((isObject, index) => isObject ? [{ x: index % size, y: Math.floor(index / size) }] : [])
+    if (points.length < 120 || points.length > size * size * 0.92) { setFigure('unknown'); return 'unknown' }
+    const minX = Math.min(...points.map(p => p.x)); const maxX = Math.max(...points.map(p => p.x))
+    const minY = Math.min(...points.map(p => p.y)); const maxY = Math.max(...points.map(p => p.y))
+    const boxArea = (maxX - minX + 1) * (maxY - minY + 1)
+    // Extent = píxeles del objeto dentro del bounding box / área del bounding box.
+    // Un círculo ronda π/4 (0.78), un rectángulo se acerca a 1 y un triángulo a 0.50.
+    const extent = points.length / boxArea
+
+    // --- Paso 3: contorno y conteo de vértices ---
+    // Rastreamos el borde exterior del área rellenada (Moore boundary tracing)
+    // y contamos cuántas veces la dirección cambia bruscamente: un círculo casi
+    // no tiene esquinas, un triángulo tiene ~3 y un rectángulo ~4. Esta señal
+    // es más confiable que el extent solo, porque no depende del brillo.
+    const idx = (x: number, y: number) => y * size + x
+    const inside = (x: number, y: number) => x >= 0 && x < size && y >= 0 && y < size && filled[idx(x, y)]
+    let start: { x: number; y: number } | null = null
+    outer: for (let y = minY; y <= maxY; y++) { for (let x = minX; x <= maxX; x++) { if (inside(x, y)) { start = { x, y }; break outer } } }
+    let corners = 0
+    if (start) {
+      const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]]
+      const contour: { x: number; y: number }[] = [start]
+      let current = start; let backtrack = 6; let guard = 0
+      while (guard++ < 6000) {
+        let moved = false
+        for (let k = 0; k < 8; k++) {
+          const d = dirs[(backtrack + k) % 8]
+          const nx = current.x + d[0]; const ny = current.y + d[1]
+          if (inside(nx, ny)) { current = { x: nx, y: ny }; backtrack = (backtrack + k + 5) % 8; contour.push(current); moved = true; break }
+        }
+        if (!moved || (current.x === start.x && current.y === start.y && contour.length > 4)) break
+      }
+      const step = Math.max(3, Math.floor(contour.length / 60))
+      const sample = contour.filter((_, i) => i % step === 0)
+      const angles = sample.map((point, i) => {
+        const prev = sample[(i - 1 + sample.length) % sample.length]
+        const next = sample[(i + 1) % sample.length]
+        const v1x = point.x - prev.x; const v1y = point.y - prev.y
+        const v2x = next.x - point.x; const v2y = next.y - point.y
+        const dot = v1x * v2x + v1y * v2y; const cross = v1x * v2y - v1y * v2x
+        return Math.atan2(Math.abs(cross), dot) * (180 / Math.PI)
+      })
+      for (let i = 0; i < angles.length; i++) {
+        const prev = angles[(i - 1 + angles.length) % angles.length]
+        const next = angles[(i + 1) % angles.length]
+        if (angles[i] > 28 && angles[i] >= prev && angles[i] >= next) corners++
+      }
+    }
+
+    // --- Paso 4: clasificación combinando vértices y extent ---
+    let detected: Figure
+    if (corners <= 1) detected = 'circle'
+    else if (corners === 3) detected = 'triangle'
+    else if (corners >= 4) detected = 'rectangle'
+    else {
+      const references: [Figure, number][] = [['circle', 0.78], ['rectangle', 0.94], ['triangle', 0.5]]
+      detected = references.reduce((closest, current) => Math.abs(current[1] - extent) < Math.abs(closest[1] - extent) ? current : closest)[0]
+    }
     setFigure(detected)
     return detected
   }
