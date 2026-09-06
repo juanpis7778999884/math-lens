@@ -67,8 +67,13 @@ export default function MathLensApp() {
     const previous = supabase.getChannels().find(item => item.topic === `realtime:${channelName}`)
     if (previous) void supabase.removeChannel(previous)
     const channel = supabase.channel(channelName)
-    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'mathlens_sessions', filter: `session_id=eq.${sessionId}` }, payload => { if (!cancelled && payload.new) setSession(payload.new as SessionRow) })
-    void channel.subscribe()
+    channel.on('postgres_changes', { event: '*', schema: 'public', table: 'mathlens_sessions', filter: `session_id=eq.${sessionId}` }, async () => {
+      // Volvemos a leer la fila completa en vez de confiar en el payload del evento:
+      // así evitamos perder columnas si Supabase envía una carga parcial.
+      const { data: refreshed } = await supabase.from('mathlens_sessions').select('status,current_round,published_figure,question_text').eq('session_id', sessionId).maybeSingle()
+      if (!cancelled && refreshed) setSession(refreshed as SessionRow)
+    })
+    channel.subscribe(status => { if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') console.error('mathlens_sessions realtime status:', status) })
     return () => { cancelled = true; void supabase.removeChannel(channel) }
   }, [supabase])
   const startCamera = async () => { try { setCameraError(''); const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false }); streamRef.current = stream; setCameraOn(true) } catch { setCameraError('No se pudo abrir la cámara. Revisa el permiso del navegador.') } }
