@@ -3,20 +3,94 @@
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, PerspectiveCamera, Line } from '@react-three/drei'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Camera, CameraOff, Check, ChevronDown, ChevronUp, CircleHelp, Copy, Crown, Flame, Gauge, LineChart, Radio, ScanLine, Sparkles, Trophy, Users, X } from 'lucide-react'
+import { Camera, CameraOff, Check, ChevronDown, ChevronUp, CircleHelp, Copy, Crown, Flame, Gauge, LineChart, Radio, ScanLine, Sparkles, Trophy, Users, X, Download, History, RotateCcw, Volume2, VolumeX, Zap } from 'lucide-react'
 import * as THREE from 'three'
 import { createBrowserSupabaseClient } from '@/lib/supabase/client'
 import { functions, intersectionCurve, sampleSurface, type Difficulty, type MathFunction } from '@/lib/math-lens'
 
-type Figure = 'circle' | 'rectangle' | 'triangle' | 'unknown'
+type Figure = 'circle' | 'rectangle' | 'triangle' | 'ellipse' | 'hyperbola' | 'parabola' | 'unknown'
 type Student = { id: string; student_id: string; name: string; group_name: string; score: number; streak: number; answered_current_round: boolean; last_answer_correct: boolean | null }
 type SessionRow = { status: 'waiting' | 'active' | 'closed'; current_round: number; published_figure: Figure | null; question_text: string | null }
+type DetectionHistory = { figure: Figure; confidence: number; timestamp: number; image: string | null }
 
-const figureInfo: Record<Figure, { label: string; expression: string; title: string; domain: string; range: string; hint: string; color: string; trivia: { question: string; options: string[]; answer: number; explanation: string } }> = {
-  circle: { label: 'Círculo', title: 'Superficie circular', expression: 'x^2 + y^2', domain: 'Todos los reales · ℝ²', range: '[0, ∞)', hint: 'La cámara detectó una silueta circular. Su simetría radial se traduce en una cuenca parabólica.', color: '#44e0d1', trivia: { question: '¿Qué simetría conserva la figura capturada?', options: ['Rotación alrededor del centro', 'Solo reflexión vertical', 'Ninguna'], answer: 0, explanation: 'Un círculo conserva su forma al rotar cualquier ángulo alrededor de su centro.' } },
-  rectangle: { label: 'Rectángulo', title: 'Plano rectangular', expression: 'x * y', domain: 'Todos los reales · ℝ²', range: 'Todos los reales · ℝ', hint: 'La cámara detectó cuatro lados y ángulos rectos. El modelo usa una silla de montar para explorar sus ejes.', color: '#a78bfa', trivia: { question: '¿Cuántos ángulos rectos tiene la figura capturada?', options: ['2', '4', 'Depende de la escala'], answer: 1, explanation: 'Un rectángulo tiene cuatro ángulos internos de 90 grados.' } },
-  triangle: { label: 'Triángulo', title: 'Superficie triangular', expression: 'sqrt(4 - x^2 - y^2)', domain: 'Disco x² + y² ≤ 4', range: '[0, 2]', hint: 'La cámara detectó tres vértices. El modelo muestra una cúpula para conectar altura, base y área.', color: '#67e8f9', trivia: { question: '¿Cuál es la suma de sus ángulos interiores?', options: ['90°', '180°', '360°'], answer: 1, explanation: 'La suma de los ángulos interiores de cualquier triángulo es 180°.' } },
-  unknown: { label: 'Objeto libre', title: 'Exploración libre', expression: '1 / (x^2 + y^2)', domain: 'ℝ² excepto (0, 0)', range: '(0, ∞)', hint: 'La silueta necesita más contraste. Puedes seguir explorando el objeto libre y volver a capturar.', color: '#fb7185', trivia: { question: '¿Qué debes hacer para mejorar la lectura?', options: ['Acercar y buscar más contraste', 'Tapar la cámara', 'Girar la pantalla'], answer: 0, explanation: 'Una silueta con buen contraste ayuda a identificar bordes y vértices.' } },
+const figureInfo: Record<Figure, { label: string; expression: string; title: string; domain: string; range: string; hint: string; color: string; emoji: string; trivia: { question: string; options: string[]; answer: number; explanation: string } }> = {
+  circle: { 
+    label: 'Círculo', 
+    title: 'Superficie circular', 
+    expression: 'x^2 + y^2', 
+    domain: 'Todos los reales · ℝ²', 
+    range: '[0, ∞)', 
+    hint: 'La cámara detectó una silueta circular. Su simetría radial se traduce en una cuenca parabólica.', 
+    color: '#44e0d1',
+    emoji: '⭕',
+    trivia: { question: '¿Qué simetría conserva la figura capturada?', options: ['Rotación alrededor del centro', 'Solo reflexión vertical', 'Ninguna'], answer: 0, explanation: 'Un círculo conserva su forma al rotar cualquier ángulo alrededor de su centro.' } 
+  },
+  rectangle: { 
+    label: 'Rectángulo', 
+    title: 'Plano rectangular', 
+    expression: 'x * y', 
+    domain: 'Todos los reales · ℝ²', 
+    range: 'Todos los reales · ℝ', 
+    hint: 'La cámara detectó cuatro lados y ángulos rectos. El modelo usa una silla de montar para explorar sus ejes.', 
+    color: '#a78bfa',
+    emoji: '📐',
+    trivia: { question: '¿Cuántos ángulos rectos tiene la figura capturada?', options: ['2', '4', 'Depende de la escala'], answer: 1, explanation: 'Un rectángulo tiene cuatro ángulos internos de 90 grados.' } 
+  },
+  triangle: { 
+    label: 'Triángulo', 
+    title: 'Superficie triangular', 
+    expression: 'sqrt(4 - x^2 - y^2)', 
+    domain: 'Disco x² + y² ≤ 4', 
+    range: '[0, 2]', 
+    hint: 'La cámara detectó tres vértices. El modelo muestra una cúpula para conectar altura, base y área.', 
+    color: '#67e8f9',
+    emoji: '🔺',
+    trivia: { question: '¿Cuál es la suma de sus ángulos interiores?', options: ['90°', '180°', '360°'], answer: 1, explanation: 'La suma de los ángulos interiores de cualquier triángulo es 180°.' } 
+  },
+  ellipse: { 
+    label: 'Elipse', 
+    title: 'Superficie elíptica', 
+    expression: '(x^2)/4 + (y^2)/9', 
+    domain: 'Todos los reales · ℝ²', 
+    range: '[0, ∞)', 
+    hint: 'La cámara detectó una forma ovalada. La elipse tiene dos ejes de simetría y su superficie se curva suavemente.', 
+    color: '#fbbf24',
+    emoji: '🟠',
+    trivia: { question: '¿Cuántos ejes de simetría tiene una elipse?', options: ['1', '2', '4'], answer: 1, explanation: 'Una elipse tiene dos ejes de simetría: el eje mayor y el eje menor.' } 
+  },
+  hyperbola: { 
+    label: 'Hipérbola', 
+    title: 'Superficie hiperbólica', 
+    expression: 'x^2 - y^2', 
+    domain: 'Todos los reales · ℝ²', 
+    range: 'Todos los reales · ℝ', 
+    hint: 'La cámara detectó una silueta con dos curvas separadas. La hipérbola tiene asíntotas que guían su forma.', 
+    color: '#fb7185',
+    emoji: '♾️',
+    trivia: { question: '¿Cuántas asíntotas tiene una hipérbola?', options: ['1', '2', '4'], answer: 1, explanation: 'Una hipérbola tiene dos asíntotas que se cruzan en el centro de la hipérbola.' } 
+  },
+  parabola: { 
+    label: 'Parábola', 
+    title: 'Superficie parabólica', 
+    expression: 'x^2 + y', 
+    domain: 'Todos los reales · ℝ²', 
+    range: 'Todos los reales · ℝ', 
+    hint: 'La cámara detectó una curva en forma de U. La parábola tiene un vértice y un eje de simetría.', 
+    color: '#34d399',
+    emoji: '🔄',
+    trivia: { question: '¿Cuál es el punto más importante de una parábola?', options: ['El vértice', 'El foco', 'La directriz'], answer: 0, explanation: 'El vértice es el punto más bajo (o más alto) de la parábola y determina su orientación.' } 
+  },
+  unknown: { 
+    label: 'Objeto libre', 
+    title: 'Exploración libre', 
+    expression: '1 / (x^2 + y^2)', 
+    domain: 'ℝ² excepto (0, 0)', 
+    range: '(0, ∞)', 
+    hint: 'La silueta necesita más contraste. Puedes seguir explorando el objeto libre y volver a capturar.', 
+    color: '#6b7280',
+    emoji: '❓',
+    trivia: { question: '¿Qué debes hacer para mejorar la lectura?', options: ['Acercar y buscar más contraste', 'Tapar la cámara', 'Girar la pantalla'], answer: 0, explanation: 'Una silueta con buen contraste ayuda a identificar bordes y vértices.' } 
+  },
 }
 
 function Surface({ active, k }: { active: MathFunction | (typeof figureInfo)[Figure]; k: number }) {
@@ -42,19 +116,18 @@ function Scene({ active, k }: { active: MathFunction | (typeof figureInfo)[Figur
 
 const levels: { label: Difficulty; count: number }[] = [{ label: 'Fácil', count: 2 }, { label: 'Medio', count: 2 }, { label: 'Difícil', count: 2 }]
 
-// ✅ VERSIÓN ULTRA SIMPLIFICADA Y MÁS PRECISA
-function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figure; confidence: number } {
-  // Usar un tamaño más pequeño para análisis más rápido
+// Función de detección mejorada para 6 figuras
+function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figure; confidence: number; details: string } {
   const size = 150
   const analysisCanvas = document.createElement('canvas')
   analysisCanvas.width = size
   analysisCanvas.height = size
   const analysisContext = analysisCanvas.getContext('2d', { willReadFrequently: true })
   if (!analysisContext || sourceCanvas.width === 0 || sourceCanvas.height === 0) { 
-    return { figure: 'unknown', confidence: 0 }
+    return { figure: 'unknown', confidence: 0, details: 'No se pudo procesar la imagen' }
   }
   
-  // 🔥 Recortar SOLO el 40% CENTRAL (más agresivo para ignorar bordes)
+  // Recortar al 40% CENTRAL
   const cropRatio = 0.40
   const cropW = sourceCanvas.width * cropRatio
   const cropH = sourceCanvas.height * cropRatio
@@ -66,14 +139,14 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
   const imageData = analysisContext.getImageData(0, 0, size, size)
   const data = imageData.data
   
-  // Convertir a escala de grises y binarizar con umbral adaptativo
+  // Convertir a escala de grises
   const grays = new Float32Array(size * size)
   for (let i = 0; i < data.length; i += 4) {
     const avg = (data[i] + data[i+1] + data[i+2]) / 3
     grays[i / 4] = avg
   }
   
-  // Calcular umbral Otsu simplificado
+  // Calcular umbral Otsu
   let sum = 0, sumB = 0, wB = 0, wF = 0, varBetween = 0, maxVar = 0, threshold = 128
   const histogram = new Array(256).fill(0)
   for (let i = 0; i < grays.length; i++) {
@@ -107,9 +180,8 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
   // Encontrar el objeto más grande en el centro
   const visited = new Uint8Array(size * size)
   let maxArea = 0
-  let bestObj = { minX: size, maxX: 0, minY: size, maxY: 0, points: 0 }
+  let bestObj = { minX: size, maxX: 0, minY: size, maxY: 0, points: 0, perimeter: 0 }
   
-  // Buscar objetos conectados (solo en el centro)
   const centerStart = Math.floor(size * 0.3)
   const centerEnd = Math.floor(size * 0.7)
   
@@ -118,11 +190,11 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
       const idx = y * size + x
       if (visited[idx] || binary[idx] === 0) continue
       
-      // BFS para encontrar objeto
       const queue: number[] = [idx]
       visited[idx] = 1
       let area = 0
       let minX = size, maxX = 0, minY = size, maxY = 0
+      let perimeter = 0
       
       while (queue.length > 0) {
         const current = queue.shift()!
@@ -134,11 +206,21 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
         minY = Math.min(minY, cy)
         maxY = Math.max(maxY, cy)
         
-        // Revisar vecinos (4-direcciones)
+        // Calcular perímetro (píxeles que tienen vecinos fuera del objeto)
         const neighbors = [
           current - 1, current + 1,
           current - size, current + size
         ]
+        let borderPixels = 0
+        for (const n of neighbors) {
+          if (n < 0 || n >= size * size) { borderPixels++; continue }
+          const nx = n % size
+          const ny = Math.floor(n / size)
+          if (nx < 0 || nx >= size || ny < 0 || ny >= size) { borderPixels++; continue }
+          if (!visited[n] && binary[n] === 0) borderPixels++
+        }
+        if (borderPixels > 0) perimeter++
+        
         for (const n of neighbors) {
           if (n < 0 || n >= size * size) continue
           const nx = n % size
@@ -151,64 +233,90 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
         }
       }
       
-      // Solo considerar objetos con área razonable
       if (area > 50 && area > maxArea) {
         maxArea = area
-        bestObj = { minX, maxX, minY, maxY, points: area }
+        bestObj = { minX, maxX, minY, maxY, points: area, perimeter }
       }
     }
   }
   
-  // Si no se encontró objeto, desconocido
   if (maxArea < 30) {
-    return { figure: 'unknown', confidence: 0 }
+    return { figure: 'unknown', confidence: 0, details: 'No se encontró ninguna figura' }
   }
   
-  const { minX, maxX, minY, maxY, points } = bestObj
+  const { minX, maxX, minY, maxY, points, perimeter } = bestObj
   const objWidth = maxX - minX + 1
   const objHeight = maxY - minY + 1
   const aspectRatio = objWidth / objHeight
   const extent = points / (objWidth * objHeight)
+  const circularity = (perimeter * perimeter) / (4 * Math.PI * points)
   
-  // 🔥 CLASIFICACIÓN MEJORADA
   let detectedFigure: Figure = 'unknown'
   let confidence = 0
+  let details = ''
   
-  // 1. Círculo: aspect ratio cercano a 1 y extent cercano a 0.78
-  if (Math.abs(aspectRatio - 1) < 0.25 && extent > 0.65 && extent < 0.88) {
+  // 🔥 CLASIFICACIÓN AVANZADA PARA 6 FIGURAS
+  
+  // 1. Círculo: aspect ratio ~1, extent ~0.78, circularity ~1
+  if (Math.abs(aspectRatio - 1) < 0.2 && extent > 0.68 && extent < 0.88 && circularity < 1.3) {
     detectedFigure = 'circle'
-    confidence = 0.85
+    confidence = Math.min(0.95, 0.7 + (1 - circularity) * 0.3)
+    details = `Circularidad: ${circularity.toFixed(2)}`
   }
-  // 2. Rectángulo: aspect ratio puede variar, extent alto
-  else if (extent > 0.85 && (aspectRatio > 0.6 && aspectRatio < 2.0)) {
+  // 2. Elipse: aspect ratio diferente de 1, extent similar a círculo
+  else if (Math.abs(aspectRatio - 1) > 0.2 && extent > 0.65 && extent < 0.88 && circularity < 1.5) {
+    detectedFigure = 'ellipse'
+    confidence = 0.8
+    details = `Aspect ratio: ${aspectRatio.toFixed(2)}`
+  }
+  // 3. Rectángulo: extent alto
+  else if (extent > 0.85 && (aspectRatio > 0.5 && aspectRatio < 2.5) && circularity > 1.5) {
     detectedFigure = 'rectangle'
-    confidence = 0.80
+    confidence = 0.85
+    details = `Extent: ${extent.toFixed(2)}`
   }
-  // 3. Triángulo: extent bajo, aspect ratio variable
+  // 4. Triángulo: extent bajo
   else if (extent < 0.65 && extent > 0.3 && (aspectRatio > 0.4 && aspectRatio < 2.5)) {
     detectedFigure = 'triangle'
     confidence = 0.75
+    details = `Extent: ${extent.toFixed(2)}`
   }
-  // Fallback: usar el extent
+  // 5. Parábola: forma de U (extent bajo, aspect ratio específico)
+  else if (extent < 0.5 && extent > 0.2 && aspectRatio > 0.8 && aspectRatio < 1.8) {
+    detectedFigure = 'parabola'
+    confidence = 0.7
+    details = `Forma de U detectada`
+  }
+  // 6. Hipérbola: dos curvas separadas (extent muy bajo)
+  else if (extent < 0.3 && aspectRatio > 0.6 && aspectRatio < 2.0) {
+    detectedFigure = 'hyperbola'
+    confidence = 0.65
+    details = `Dos curvas detectadas`
+  }
+  // Fallback: usar extent
   else {
     const references: [Figure, number][] = [
       ['circle', 0.78], 
       ['rectangle', 0.92], 
-      ['triangle', 0.5]
+      ['triangle', 0.5],
+      ['ellipse', 0.75],
+      ['parabola', 0.4],
+      ['hyperbola', 0.25]
     ]
     const best = references.reduce((closest, current) => 
       Math.abs(current[1] - extent) < Math.abs(closest[1] - extent) ? current : closest
     )
     detectedFigure = best[0]
     confidence = 0.5
+    details = `Extent: ${extent.toFixed(2)}`
   }
   
-  console.log(`🔍 Detección: ${detectedFigure} | Área: ${points} | Extent: ${extent.toFixed(2)} | Aspect: ${aspectRatio.toFixed(2)} | Conf: ${(confidence * 100).toFixed(0)}%`)
+  console.log(`🔍 Detección: ${detectedFigure} | Área: ${points} | Extent: ${extent.toFixed(2)} | Aspect: ${aspectRatio.toFixed(2)} | Circularidad: ${circularity.toFixed(2)} | Conf: ${(confidence * 100).toFixed(0)}%`)
   
-  return { figure: detectedFigure, confidence }
+  return { figure: detectedFigure, confidence, details }
 }
 
-function CameraPanel({ cameraOn, photo, videoRef, canvasRef, error, startCamera, stopCamera, captureFigure, processing }: { 
+function CameraPanel({ cameraOn, photo, videoRef, canvasRef, error, startCamera, stopCamera, captureFigure, processing, autoMode, setAutoMode }: { 
   cameraOn: boolean; 
   photo: string | null; 
   videoRef: React.RefObject<HTMLVideoElement | null>; 
@@ -218,6 +326,8 @@ function CameraPanel({ cameraOn, photo, videoRef, canvasRef, error, startCamera,
   stopCamera: () => void; 
   captureFigure: () => void;
   processing: boolean;
+  autoMode: boolean;
+  setAutoMode: (value: boolean) => void;
 }) { 
   return <div className="overflow-hidden rounded-2xl border border-primary/20 bg-card/70 p-3">
     <div className="flex flex-col gap-3 md:flex-row md:items-center">
@@ -227,6 +337,7 @@ function CameraPanel({ cameraOn, photo, videoRef, canvasRef, error, startCamera,
             <video ref={videoRef} playsInline muted className="size-full object-cover" />
             <div className="pointer-events-none absolute inset-4 rounded-lg border border-primary/70">
               <ScanLine className="absolute right-2 top-2 size-5 text-primary" />
+              {autoMode && <Zap className="absolute left-2 top-2 size-5 text-yellow-500 animate-pulse" />}
             </div>
           </>
         ) : photo ? (
@@ -248,13 +359,20 @@ function CameraPanel({ cameraOn, photo, videoRef, canvasRef, error, startCamera,
           <Camera className="size-4 text-primary" />
           <p className="text-sm font-semibold">Cámara de figura real</p>
         </div>
-        <p className="text-xs leading-relaxed text-muted-foreground">Apunta a un círculo, rectángulo o triángulo. MathLens toma una captura, interpreta su silueta y adapta el modelo 3D y la trivia.</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">Apunta a un círculo, rectángulo, triángulo, elipse, hipérbola o parábola. MathLens toma una captura, interpreta su silueta y adapta el modelo 3D y la trivia.</p>
         {error && <p className="text-xs text-destructive">{error}</p>}
         <div className="flex flex-wrap gap-2">
           {cameraOn ? (
             <>
               <button onClick={captureFigure} className="rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground" disabled={processing}>
                 {processing ? 'Procesando...' : 'Capturar figura'}
+              </button>
+              <button 
+                onClick={() => setAutoMode(!autoMode)} 
+                className={`rounded-lg px-4 py-2 text-xs font-semibold ${autoMode ? 'bg-yellow-500 text-black' : 'border border-border text-muted-foreground'}`}
+              >
+                <Zap className={`mr-1 inline size-3.5 ${autoMode ? 'animate-pulse' : ''}`} />
+                {autoMode ? 'Auto ON' : 'Auto OFF'}
               </button>
               <button onClick={stopCamera} className="rounded-lg border border-border px-4 py-2 text-xs text-muted-foreground">
                 <CameraOff className="mr-1 inline size-3.5" /> Cerrar cámara
@@ -271,15 +389,15 @@ function CameraPanel({ cameraOn, photo, videoRef, canvasRef, error, startCamera,
   </div> 
 }
 
-function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) { 
-  return <div className="rounded-xl border border-border bg-card p-4">
+function Stat({ icon, label, value, color }: { icon: React.ReactNode; label: string; value: string; color?: string }) { 
+  return <div className={`rounded-xl border border-border bg-card p-4 ${color || ''}`}>
     <div className="mb-4 text-primary [&>svg]:size-4">{icon}</div>
     <p className="text-xs text-muted-foreground">{label}</p>
     <p className="mt-1 font-mono text-2xl">{value}</p>
   </div> 
 }
 
-function Teacher({ students, sessionId, copySession, copied, cameraOn, photo, videoRef, canvasRef, cameraError, startCamera, stopCamera, captureFigure, uploadFigure, figure, setFigure, teacherQuestion, setTeacherQuestion, publishTeacherQuestion, closeRound, teacherPublished, publishedFigure, publishError, processing, confidence }: { 
+function Teacher({ students, sessionId, copySession, copied, cameraOn, photo, videoRef, canvasRef, cameraError, startCamera, stopCamera, captureFigure, uploadFigure, figure, setFigure, teacherQuestion, setTeacherQuestion, publishTeacherQuestion, closeRound, teacherPublished, publishedFigure, publishError, processing, confidence, detectionHistory, captureCount, autoMode, setAutoMode, exportResults, resetSession, soundEnabled, setSoundEnabled }: { 
   students: Student[]; 
   sessionId: string; 
   copySession: () => void; 
@@ -304,8 +422,22 @@ function Teacher({ students, sessionId, copySession, copied, cameraOn, photo, vi
   publishError: string;
   processing: boolean;
   confidence: number;
+  detectionHistory: DetectionHistory[];
+  captureCount: number;
+  autoMode: boolean;
+  setAutoMode: (value: boolean) => void;
+  exportResults: () => void;
+  resetSession: () => void;
+  soundEnabled: boolean;
+  setSoundEnabled: (value: boolean) => void;
 }) { 
   const total = students.reduce((sum, s) => sum + s.score, 0); 
+  const getConfidenceColor = (conf: number) => {
+    if (conf > 0.8) return 'text-green-500'
+    if (conf > 0.6) return 'text-yellow-500'
+    return 'text-red-500'
+  }
+  
   return <section className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-8 md:px-8">
     <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
       <div>
@@ -313,7 +445,7 @@ function Teacher({ students, sessionId, copySession, copied, cameraOn, photo, vi
         <h1 className="text-balance text-3xl font-semibold md:text-5xl">La clase, en tiempo real.</h1>
         <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">Observa quién está conectado, quién respondió y cómo progresa cada estudiante durante la exploración.</p>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <div className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ${teacherPublished ? 'bg-primary/15 text-primary' : 'bg-secondary text-muted-foreground'}`}>
           <span className={`size-2 rounded-full ${teacherPublished ? 'animate-pulse bg-primary' : 'bg-muted-foreground'}`} />
           {teacherPublished ? 'Ronda activa' : 'Sin ronda activa'}
@@ -327,6 +459,15 @@ function Teacher({ students, sessionId, copySession, copied, cameraOn, photo, vi
             </button>
           </div>
         </div>
+        <button onClick={() => setSoundEnabled(!soundEnabled)} className="rounded-lg border border-border p-2 text-muted-foreground hover:text-primary">
+          {soundEnabled ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
+        </button>
+        <button onClick={exportResults} className="rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground hover:text-primary">
+          <Download className="mr-1 inline size-3.5" /> Exportar
+        </button>
+        <button onClick={resetSession} className="rounded-lg border border-destructive/30 px-3 py-2 text-xs text-destructive hover:bg-destructive/10">
+          <RotateCcw className="mr-1 inline size-3.5" /> Reiniciar
+        </button>
       </div>
     </div>
     <div className="grid gap-3 lg:grid-cols-[1.05fr_0.95fr] lg:items-start">
@@ -335,6 +476,7 @@ function Teacher({ students, sessionId, copySession, copied, cameraOn, photo, vi
           <div>
             <p className="font-mono text-[10px] uppercase tracking-widest text-primary">Crear ronda</p>
             <h2 className="mt-1 text-lg font-semibold">Captura una figura de tu entorno</h2>
+            <p className="text-xs text-muted-foreground">Capturas: {captureCount}</p>
           </div>
           <ScanLine className="size-5 text-primary" />
         </div>
@@ -348,6 +490,8 @@ function Teacher({ students, sessionId, copySession, copied, cameraOn, photo, vi
           stopCamera={stopCamera} 
           captureFigure={captureFigure}
           processing={processing}
+          autoMode={autoMode}
+          setAutoMode={setAutoMode}
         />
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <label className="cursor-pointer rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground hover:border-primary/60">
@@ -355,8 +499,8 @@ function Teacher({ students, sessionId, copySession, copied, cameraOn, photo, vi
             <input type="file" accept="image/*" className="sr-only" onChange={e => { const file = e.target.files?.[0]; if (file) uploadFigure(file) }} />
           </label>
           {figure !== 'unknown' && (
-            <span className="rounded-full bg-primary/10 px-3 py-1.5 text-xs text-primary">
-              Detectado: {figureInfo[figure].label} {confidence > 0 && `(${Math.round(confidence * 100)}%)`}
+            <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${getConfidenceColor(confidence)} bg-opacity-10 bg-current`}>
+              {figureInfo[figure].emoji} {figureInfo[figure].label} ({Math.round(confidence * 100)}%)
             </span>
           )}
           {processing && (
@@ -365,16 +509,35 @@ function Teacher({ students, sessionId, copySession, copied, cameraOn, photo, vi
             </span>
           )}
         </div>
+        {/* Historial de detecciones */}
+        {detectionHistory.length > 0 && (
+          <div className="mt-3 rounded-lg border border-border/50 bg-secondary/30 p-2">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <History className="size-3.5" />
+              <span>Historial:</span>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {detectionHistory.slice(-5).map((det, i) => (
+                <span key={i} className={`rounded px-2 py-0.5 text-[10px] font-medium ${getConfidenceColor(det.confidence)} bg-opacity-10 bg-current`}>
+                  {figureInfo[det.figure]?.emoji || '❓'} {Math.round(det.confidence * 100)}%
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="mt-4 flex flex-col gap-2">
           <label htmlFor="teacher-question" className="text-xs font-semibold">Pregunta para la clase</label>
           <p className="text-[11px] leading-relaxed text-muted-foreground">Este texto aparece como encabezado de la pregunta. Las 4 opciones de respuesta que verá el estudiante son las predefinidas de dominio/rango para la figura seleccionada abajo, no las que escribas aquí.</p>
           <textarea id="teacher-question" value={teacherQuestion} onChange={e => setTeacherQuestion(e.target.value)} placeholder={figure !== 'unknown' ? `¿Qué propiedad observas en este ${figureInfo[figure].label.toLowerCase()}?` : 'Captura una figura para comenzar...'} className="min-h-20 resize-none rounded-xl border border-border bg-background p-3 text-sm outline-none focus:border-primary" />
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <select value={figure} onChange={e => setFigure(e.target.value as Figure)} className="rounded-lg border border-border bg-background px-3 py-2 text-xs">
-              <option value="circle">Círculo</option>
-              <option value="rectangle">Rectángulo</option>
-              <option value="triangle">Triángulo</option>
-              <option value="unknown">Objeto libre</option>
+              <option value="circle">⭕ Círculo</option>
+              <option value="rectangle">📐 Rectángulo</option>
+              <option value="triangle">🔺 Triángulo</option>
+              <option value="ellipse">🟠 Elipse</option>
+              <option value="hyperbola">♾️ Hipérbola</option>
+              <option value="parabola">🔄 Parábola</option>
+              <option value="unknown">❓ Objeto libre</option>
             </select>
             <button disabled={!teacherQuestion.trim() || figure === 'unknown' || processing} onClick={publishTeacherQuestion} className="rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-40">
               {teacherPublished ? 'Publicada en vivo' : 'Publicar pregunta'}
@@ -387,7 +550,7 @@ function Teacher({ students, sessionId, copySession, copied, cameraOn, photo, vi
       <div className="rounded-2xl border border-border bg-card p-4">
         <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Vista previa</p>
         <div className="mt-4 rounded-xl border border-border bg-background p-4">
-          <p className="text-xs text-primary">{publishedFigure !== 'unknown' ? figureInfo[publishedFigure].label : 'Sin figura publicada'}</p>
+          <p className="text-xs text-primary">{publishedFigure !== 'unknown' ? `${figureInfo[publishedFigure].emoji} ${figureInfo[publishedFigure].label}` : 'Sin figura publicada'}</p>
           <p className="mt-2 text-sm leading-relaxed">{teacherPublished ? teacherQuestion : 'La pregunta aparecerá aquí antes de compartirla con la clase.'}</p>
           {teacherPublished && <p className="mt-4 text-xs text-muted-foreground">Los estudiantes recibirán la figura, el modelo y esta pregunta en su pantalla.</p>}
         </div>
@@ -436,6 +599,7 @@ export default function MathLensApp() {
   const videoRef = useRef<HTMLVideoElement>(null); 
   const canvasRef = useRef<HTMLCanvasElement>(null); 
   const streamRef = useRef<MediaStream | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
   
   const [mode, setMode] = useState<'student' | 'teacher'>('student'); 
   const [cameraOn, setCameraOn] = useState(false); 
@@ -464,6 +628,11 @@ export default function MathLensApp() {
   const [copied, setCopied] = useState(false); 
   const [processing, setProcessing] = useState(false);
   const [confidence, setConfidence] = useState(0);
+  const [detectionHistory, setDetectionHistory] = useState<DetectionHistory[]>([]);
+  const [captureCount, setCaptureCount] = useState(0);
+  const [autoMode, setAutoMode] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [autoCaptureTimer, setAutoCaptureTimer] = useState<NodeJS.Timeout | null>(null);
   
   const sessionId = 'clase-hoy'; 
   const studentId = useMemo(() => { 
@@ -477,7 +646,52 @@ export default function MathLensApp() {
   
   const active = figure !== 'unknown' ? figureInfo[figure] : functions.filter(f => f.difficulty === level)[index % 2]
 
-  const captureFigure = () => { 
+  // Sonidos de feedback
+  const playSound = (type: 'success' | 'error' | 'detection') => {
+    if (!soundEnabled) return
+    try {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      }
+      const ctx = audioContextRef.current
+      const oscillator = ctx.createOscillator()
+      const gainNode = ctx.createGain()
+      oscillator.connect(gainNode)
+      gainNode.connect(ctx.destination)
+      
+      if (type === 'success') {
+        oscillator.frequency.value = 880
+        gainNode.gain.value = 0.3
+        oscillator.start(ctx.currentTime)
+        oscillator.stop(ctx.currentTime + 0.15)
+      } else if (type === 'error') {
+        oscillator.frequency.value = 440
+        gainNode.gain.value = 0.2
+        oscillator.start(ctx.currentTime)
+        oscillator.stop(ctx.currentTime + 0.3)
+      } else if (type === 'detection') {
+        oscillator.frequency.value = 660
+        gainNode.gain.value = 0.25
+        oscillator.start(ctx.currentTime)
+        setTimeout(() => {
+          const osc2 = ctx.createOscillator()
+          const gain2 = ctx.createGain()
+          osc2.connect(gain2)
+          gain2.connect(ctx.destination)
+          osc2.frequency.value = 880
+          gain2.gain.value = 0.2
+          osc2.start(ctx.currentTime + 0.15)
+          osc2.stop(ctx.currentTime + 0.3)
+        }, 150)
+        oscillator.stop(ctx.currentTime + 0.15)
+      }
+    } catch (e) {
+      // Silenciar errores de audio
+    }
+  }
+
+  // Función de captura mejorada
+  const performCapture = () => {
     const video = videoRef.current; 
     if (!video) return; 
     
@@ -495,7 +709,6 @@ export default function MathLensApp() {
     ctx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
     setPhoto(tempCanvas.toDataURL('image/jpeg', 0.9));
     
-    // 🔥 Recortar SOLO el 40% CENTRAL
     const cropSize = Math.min(tempCanvas.width, tempCanvas.height) * 0.40;
     const cropX = (tempCanvas.width - cropSize) / 2;
     const cropY = (tempCanvas.height - cropSize) / 2;
@@ -512,17 +725,33 @@ export default function MathLensApp() {
       const result = detectFigureWithCanvas(cropCanvas);
       console.log('📸 Detección captura:', result);
       
+      // Guardar en historial
+      setDetectionHistory(prev => [...prev, {
+        figure: result.figure,
+        confidence: result.confidence,
+        timestamp: Date.now(),
+        image: cropCanvas.toDataURL('image/jpeg', 0.5)
+      }])
+      
+      setCaptureCount(prev => prev + 1)
+      
       if (result.figure !== 'unknown' && result.confidence > 0.4) {
-        setFigure(result.figure);
-        setConfidence(result.confidence);
+        setFigure(result.figure)
+        setConfidence(result.confidence)
+        playSound('detection')
+        if (result.confidence > 0.8) playSound('success')
       } else {
-        setFigure('unknown');
-        setConfidence(0);
+        setFigure('unknown')
+        setConfidence(0)
+        playSound('error')
       }
       setProcessing(false);
     }, 50);
-    
-    stopCamera();
+  }
+
+  const captureFigure = () => { 
+    performCapture()
+    stopCamera()
   }
 
   const uploadFigure = (file: File) => { 
@@ -558,12 +787,24 @@ export default function MathLensApp() {
         const result = detectFigureWithCanvas(cropCanvas);
         console.log('📸 Detección subida:', result);
         
+        setDetectionHistory(prev => [...prev, {
+          figure: result.figure,
+          confidence: result.confidence,
+          timestamp: Date.now(),
+          image: cropCanvas.toDataURL('image/jpeg', 0.5)
+        }])
+        
+        setCaptureCount(prev => prev + 1)
+        
         if (result.figure !== 'unknown' && result.confidence > 0.4) {
-          setFigure(result.figure);
-          setConfidence(result.confidence);
+          setFigure(result.figure)
+          setConfidence(result.confidence)
+          playSound('detection')
+          if (result.confidence > 0.8) playSound('success')
         } else {
-          setFigure('unknown');
-          setConfidence(0);
+          setFigure('unknown')
+          setConfidence(0)
+          playSound('error')
         }
         setProcessing(false);
       }, 50);
@@ -571,6 +812,95 @@ export default function MathLensApp() {
       URL.revokeObjectURL(url);
     }; 
     image.src = url;
+  }
+
+  // Modo automático
+  useEffect(() => {
+    if (autoMode && cameraOn && !processing) {
+      if (autoCaptureTimer) clearInterval(autoCaptureTimer)
+      const timer = setInterval(() => {
+        if (cameraOn && !processing) {
+          performCapture()
+        }
+      }, 3000)
+      setAutoCaptureTimer(timer)
+    } else {
+      if (autoCaptureTimer) {
+        clearInterval(autoCaptureTimer)
+        setAutoCaptureTimer(null)
+      }
+    }
+    return () => {
+      if (autoCaptureTimer) clearInterval(autoCaptureTimer)
+    }
+  }, [autoMode, cameraOn, processing])
+
+  // Exportar resultados
+  const exportResults = () => {
+    const data = {
+      session: sessionId,
+      date: new Date().toISOString(),
+      students: students,
+      detections: detectionHistory,
+      totalCaptures: captureCount,
+      summary: {
+        circles: detectionHistory.filter(d => d.figure === 'circle').length,
+        rectangles: detectionHistory.filter(d => d.figure === 'rectangle').length,
+        triangles: detectionHistory.filter(d => d.figure === 'triangle').length,
+        ellipses: detectionHistory.filter(d => d.figure === 'ellipse').length,
+        hyperbolas: detectionHistory.filter(d => d.figure === 'hyperbola').length,
+        parabolas: detectionHistory.filter(d => d.figure === 'parabola').length,
+        unknown: detectionHistory.filter(d => d.figure === 'unknown').length,
+      }
+    }
+    
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `mathlens-export-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    
+    // También exportar CSV
+    const csvRows = [
+      ['Timestamp', 'Figura', 'Confianza', 'Detalles']
+    ]
+    detectionHistory.forEach(d => {
+      csvRows.push([
+        new Date(d.timestamp).toLocaleString(),
+        d.figure,
+        (d.confidence * 100).toFixed(0) + '%',
+        figureInfo[d.figure]?.label || 'Desconocido'
+      ])
+    })
+    const csvContent = csvRows.map(row => row.join(',')).join('\n')
+    const csvBlob = new Blob([csvContent], { type: 'text/csv' })
+    const csvUrl = URL.createObjectURL(csvBlob)
+    const csvA = document.createElement('a')
+    csvA.href = csvUrl
+    csvA.download = `mathlens-export-${Date.now()}.csv`
+    csvA.click()
+    URL.revokeObjectURL(csvUrl)
+  }
+
+  // Reiniciar sesión
+  const resetSession = async () => {
+    if (confirm('¿Estás seguro de reiniciar la sesión? Se perderán todos los datos.')) {
+      setDetectionHistory([])
+      setCaptureCount(0)
+      setFigure('unknown')
+      setConfidence(0)
+      setAnswered(null)
+      setTeacherPublished(false)
+      setPublishedFigure('unknown')
+      setSession(null)
+      setStudents([])
+      // Reset en Supabase
+      await supabase.from('mathlens_sessions').delete().eq('session_id', sessionId)
+      await supabase.from('mathlens_students').delete().eq('session_id', sessionId)
+      playSound('success')
+    }
   }
 
   const publishTeacherQuestion = async () => {
@@ -583,6 +913,7 @@ export default function MathLensApp() {
     setTeacherPublished(true)
     const { error: resetError } = await supabase.from('mathlens_students').update({ answered_current_round: false, last_answer_correct: null }).eq('session_id', sessionId)
     if (resetError) console.error('reset answered error:', resetError)
+    playSound('success')
   }
 
   const closeRound = async () => {
@@ -591,6 +922,7 @@ export default function MathLensApp() {
     if (error) { console.error('closeRound error:', error); setPublishError(error.message || 'No se pudo cerrar la ronda.'); return }
     setTeacherPublished(false)
     setAnswered(null)
+    playSound('error')
   }
 
   const joinClass = async () => { 
@@ -601,6 +933,7 @@ export default function MathLensApp() {
     if (error) { console.error('joinClass error:', error); setJoinError(error.message || 'No se pudo unir a la clase.'); return }; 
     if (existing) { setScore(existing.score); setStreak(existing.streak) }; 
     setJoined(true) 
+    playSound('success')
   }
 
   const answer = async (choice: number) => { 
@@ -611,7 +944,9 @@ export default function MathLensApp() {
     const nextStreak = correct ? streak + 1 : 0; 
     setScore(nextScore); 
     setStreak(nextStreak); 
-    if (joined) await supabase.from('mathlens_students').update({ score: nextScore, streak: nextStreak, answered_current_round: true, last_answer_correct: correct }).eq('session_id', sessionId).eq('student_id', studentId) 
+    if (joined) await supabase.from('mathlens_students').update({ score: nextScore, streak: nextStreak, answered_current_round: true, last_answer_correct: correct }).eq('session_id', sessionId).eq('student_id', studentId)
+    if (correct) playSound('success') 
+    else playSound('error')
   }
 
   const next = () => { setAnswered(null); setModal(false); setIndex(i => i + 1) }; 
@@ -686,6 +1021,12 @@ export default function MathLensApp() {
     return () => { cancelled = true; void supabase.removeChannel(channel) }
   }, [supabase])
 
+  const getConfidenceColor = (conf: number) => {
+    if (conf > 0.8) return 'text-green-500'
+    if (conf > 0.6) return 'text-yellow-500'
+    return 'text-red-500'
+  }
+
   return (
     <main className="flex min-h-dvh flex-col bg-background text-foreground selection:bg-primary/30">
       <header className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-background/95 px-3 py-2 backdrop-blur md:px-8 md:py-3">
@@ -701,6 +1042,11 @@ export default function MathLensApp() {
           <div className="flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 font-mono text-xs text-primary">
             <Trophy className="size-3.5" /> {score.toString().padStart(4, '0')}
           </div>
+          {detectionHistory.length > 0 && (
+            <div className="flex items-center gap-1 rounded-full border border-border/50 bg-secondary/30 px-3 py-1.5 text-xs text-muted-foreground">
+              <History className="size-3.5" /> {detectionHistory.length}
+            </div>
+          )}
         </div>
       </header>
 
@@ -730,6 +1076,14 @@ export default function MathLensApp() {
           publishError={publishError}
           processing={processing}
           confidence={confidence}
+          detectionHistory={detectionHistory}
+          captureCount={captureCount}
+          autoMode={autoMode}
+          setAutoMode={setAutoMode}
+          exportResults={exportResults}
+          resetSession={resetSession}
+          soundEnabled={soundEnabled}
+          setSoundEnabled={setSoundEnabled}
         />
       ) : (
         <>
@@ -761,7 +1115,7 @@ export default function MathLensApp() {
               <div>
                 <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.25em] text-muted-foreground">
                   Cámara de aula · figura {figureInfo[figure].label.toLowerCase()}
-                  {confidence > 0 && <span className="ml-2 text-primary">({Math.round(confidence * 100)}% confianza)</span>}
+                  {confidence > 0 && <span className={`ml-2 ${getConfidenceColor(confidence)}`}>({Math.round(confidence * 100)}% confianza)</span>}
                 </p>
                 <h1 className="text-balance text-2xl font-semibold tracking-tight md:text-4xl">Escanea un objeto real</h1>
               </div>
@@ -789,6 +1143,8 @@ export default function MathLensApp() {
                 stopCamera={stopCamera} 
                 captureFigure={captureFigure}
                 processing={processing}
+                autoMode={autoMode}
+                setAutoMode={setAutoMode}
               />
             )}
 
@@ -798,13 +1154,18 @@ export default function MathLensApp() {
                 <span className="rounded-full border border-primary/30 bg-background/80 px-3 py-1.5 font-mono text-xs text-primary backdrop-blur">{active.expression.replaceAll('*', ' · ')}</span>
                 <span className="rounded-full border border-border bg-background/70 px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground backdrop-blur">modelo: {figureInfo[figure].label}</span>
                 {confidence > 0 && (
-                  <span className="rounded-full border border-primary/30 bg-primary/20 px-3 py-1.5 text-[10px] uppercase tracking-wider text-primary backdrop-blur">
+                  <span className={`rounded-full border px-3 py-1.5 text-[10px] uppercase tracking-wider backdrop-blur ${confidence > 0.8 ? 'border-green-500/30 bg-green-500/20 text-green-500' : confidence > 0.6 ? 'border-yellow-500/30 bg-yellow-500/20 text-yellow-500' : 'border-red-500/30 bg-red-500/20 text-red-500'}`}>
                     {Math.round(confidence * 100)}% confianza
                   </span>
                 )}
                 {processing && (
                   <span className="rounded-full border border-yellow-500/30 bg-yellow-500/20 px-3 py-1.5 text-[10px] uppercase tracking-wider text-yellow-500 backdrop-blur animate-pulse">
                     Procesando...
+                  </span>
+                )}
+                {autoMode && (
+                  <span className="rounded-full border border-yellow-500/30 bg-yellow-500/20 px-3 py-1.5 text-[10px] uppercase tracking-wider text-yellow-500 backdrop-blur animate-pulse">
+                    <Zap className="inline size-3" /> Auto
                   </span>
                 )}
               </div>
@@ -819,7 +1180,7 @@ export default function MathLensApp() {
                   <div className="mt-4 flex flex-col gap-4">
                     <div>
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Figura interpretada</p>
-                      <p className="mt-1 font-mono text-lg text-primary">{figureInfo[figure].label}</p>
+                      <p className="mt-1 font-mono text-lg text-primary">{figureInfo[figure].emoji} {figureInfo[figure].label}</p>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div className="rounded-lg bg-secondary/60 p-2.5">
@@ -845,7 +1206,7 @@ export default function MathLensApp() {
             </div>
 
             <div className="flex items-center justify-between rounded-xl border border-border/70 bg-card/60 p-3">
-              <p className="text-xs text-muted-foreground">La pregunta se genera desde la figura capturada: <b className="text-foreground">{figureInfo[figure].label}</b>.</p>
+              <p className="text-xs text-muted-foreground">La pregunta se genera desde la figura capturada: <b className="text-foreground">{figureInfo[figure].emoji} {figureInfo[figure].label}</b>.</p>
               <button onClick={() => setModal(true)} className={`flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-xs font-semibold text-primary-foreground ${answered === null ? 'animate-pulse shadow-lg shadow-primary/40' : ''}`}>
                 <CircleHelp className="size-4" /> Trivia de la figura
               </button>
@@ -859,7 +1220,7 @@ export default function MathLensApp() {
           <div role="dialog" aria-modal="true" className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="font-mono text-[10px] uppercase tracking-widest text-primary">Pregunta de {figureInfo[figure].label}</p>
+                <p className="font-mono text-[10px] uppercase tracking-widest text-primary">Pregunta de {figureInfo[figure].emoji} {figureInfo[figure].label}</p>
                 <h2 className="mt-2 text-xl font-semibold text-balance">{(session?.status === 'active' && session.question_text) || active.trivia.question}</h2>
               </div>
               <button aria-label="Cerrar trivia" onClick={() => setModal(false)} className="rounded-lg p-1 text-muted-foreground hover:bg-secondary">
@@ -876,7 +1237,7 @@ export default function MathLensApp() {
             {answered !== null && (
               <div className="mt-4 rounded-xl bg-secondary/60 p-3">
                 <p className={`text-xs font-semibold ${answered === active.trivia.answer ? 'text-primary' : 'text-destructive'}`}>
-                  {answered === active.trivia.answer ? 'Correcto · +100 puntos' : 'Revisa la figura capturada'}
+                  {answered === active.trivia.answer ? '✅ Correcto · +100 puntos' : '❌ Revisa la figura capturada'}
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{active.trivia.explanation}</p>
               </div>
