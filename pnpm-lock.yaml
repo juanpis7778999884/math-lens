@@ -17,6 +17,9 @@ importers:
       '@react-three/fiber':
         specifier: ^9.7.0
         version: 9.7.0(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(three@0.185.1)
+      '@robomous/opencv-react':
+        specifier: ^0.1.1
+        version: 0.1.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@supabase/supabase-js':
         specifier: ^2.112.4
         version: 2.112.4
@@ -595,6 +598,13 @@ packages:
         optional: true
       react-native:
         optional: true
+
+  '@robomous/opencv-react@0.1.1':
+    resolution: {integrity: sha512-6Sz26Ly4vfmL5E681+ZbABb3H05kIZm2+78QaSwqwqIgkcSDpx3T7jFDI3rG9Lgtz4dKtwueZP9xtleqy5E9IA==}
+    engines: {node: '>=22.0.0'}
+    peerDependencies:
+      react: ^18.0.0 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
 
   '@sec-ant/readable-stream@0.4.1':
     resolution: {integrity: sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg==}
@@ -2697,6 +2707,11 @@ snapshots:
     transitivePeerDependencies:
       - '@types/react'
       - immer
+
+  '@robomous/opencv-react@0.1.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
+    dependencies:
+      react: 19.2.4
+      react-dom: 19.2.4(react@19.2.4)
 
   '@sec-ant/readable-stream@0.4.1': {}
 
