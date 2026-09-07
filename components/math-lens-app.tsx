@@ -42,7 +42,7 @@ function Scene({ active, k }: { active: MathFunction | (typeof figureInfo)[Figur
 
 const levels: { label: Difficulty; count: number }[] = [{ label: 'Fácil', count: 2 }, { label: 'Medio', count: 2 }, { label: 'Difícil', count: 2 }]
 
-// Función de detección mejorada SIN OpenCV (más confiable)
+// Función de detección MEJORADA - Enfocada en el CENTRO de la imagen
 function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figure; confidence: number } {
   const size = 200
   const analysisCanvas = document.createElement('canvas')
@@ -53,8 +53,8 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
     return { figure: 'unknown', confidence: 0 }
   }
   
-  // Recortar al 70% central
-  const cropRatio = 0.7
+  // 🔥 CRUCIAL: Recortar al 45% CENTRAL para ignorar bordes y marco
+  const cropRatio = 0.45
   const cropW = sourceCanvas.width * cropRatio
   const cropH = sourceCanvas.height * cropRatio
   const cropX = (sourceCanvas.width - cropW) / 2
@@ -66,7 +66,7 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
   const data = imageData.data
   for (let i = 0; i < data.length; i += 4) {
     const avg = (data[i] + data[i+1] + data[i+2]) / 3
-    const enhanced = Math.min(255, Math.max(0, (avg - 30) * 1.5))
+    const enhanced = Math.min(255, Math.max(0, (avg - 20) * 1.8))
     data[i] = data[i+1] = data[i+2] = enhanced
   }
   analysisContext.putImageData(imageData, 0, 0)
@@ -78,7 +78,7 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
   const mean = grays.reduce((sum, value) => sum + value, 0) / grays.length
   const variance = grays.reduce((sum, value) => sum + (value - mean) ** 2, 0) / grays.length
   
-  if (variance < 60) { return { figure: 'unknown', confidence: 0 } }
+  if (variance < 40) { return { figure: 'unknown', confidence: 0 } }
 
   // Detección de bordes con Sobel
   const gx = [-1, 0, 1, -2, 0, 2, -1, 0, 1]
@@ -100,9 +100,9 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
     }
   }
   
-  if (maxEdge < 40) { return { figure: 'unknown', confidence: 0 } }
+  if (maxEdge < 30) { return { figure: 'unknown', confidence: 0 } }
   
-  const edgeThreshold = Math.max(30, maxEdge * 0.1)
+  const edgeThreshold = Math.max(25, maxEdge * 0.08)
   let edgeMask: boolean[] = new Array(size * size)
   for (let i = 0; i < edges.length; i++) edgeMask[i] = edges[i] > edgeThreshold
   
@@ -140,7 +140,7 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
   const filled = edgeMask.map((isEdge, index) => isEdge || !reached[index])
   const points = filled.flatMap((isObject, index) => isObject ? [{ x: index % size, y: Math.floor(index / size) }] : [])
   
-  if (points.length < 60 || points.length > size * size * 0.92) { 
+  if (points.length < 30 || points.length > size * size * 0.92) { 
     return { figure: 'unknown', confidence: 0 }
   }
   
@@ -202,31 +202,45 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
     for (let i = 0; i < angles.length; i++) {
       const prev = angles[(i - 1 + angles.length) % angles.length]
       const next = angles[(i + 1) % angles.length]
-      if (angles[i] > 20 && angles[i] >= prev && angles[i] >= next) corners++
+      if (angles[i] > 18 && angles[i] >= prev && angles[i] >= next) corners++
     }
   }
 
-  // Clasificar
+  // Clasificación MEJORADA - Más precisa
   let detectedFigure: Figure = 'unknown'
   let confidence = 0
   
+  // Si tiene muy pocas esquinas, es un círculo
   if (corners <= 1) {
     detectedFigure = 'circle'
     confidence = 0.85
-  } else if (corners === 3) {
+  } 
+  // Si tiene exactamente 3 esquinas, es un triángulo
+  else if (corners === 3) {
     detectedFigure = 'triangle'
     confidence = 0.85
-  } else if (corners >= 4) {
+  } 
+  // Si tiene 4 o más esquinas, es un rectángulo
+  else if (corners >= 4) {
     detectedFigure = 'rectangle'
     confidence = 0.85
-  } else {
-    const references: [Figure, number][] = [['circle', 0.78], ['rectangle', 0.94], ['triangle', 0.5]]
+  } 
+  // Fallback: usar extent
+  else {
+    const references: [Figure, number][] = [
+      ['circle', 0.78], 
+      ['rectangle', 0.94], 
+      ['triangle', 0.5]
+    ]
     const best = references.reduce((closest, current) => 
       Math.abs(current[1] - extent) < Math.abs(closest[1] - extent) ? current : closest
     )
     detectedFigure = best[0]
-    confidence = 0.7
+    confidence = 0.6
   }
+  
+  // Log para debugging
+  console.log(`🔍 Detección: ${detectedFigure} | Esquinas: ${corners} | Extent: ${extent.toFixed(2)} | Confianza: ${(confidence * 100).toFixed(0)}%`)
   
   return { figure: detectedFigure, confidence }
 }
@@ -500,29 +514,46 @@ export default function MathLensApp() {
   
   const active = figure !== 'unknown' ? figureInfo[figure] : functions.filter(f => f.difficulty === level)[index % 2]
 
-  // Función de captura mejorada
+  // Captura MEJORADA - Solo el centro de la imagen
   const captureFigure = () => { 
     const video = videoRef.current; 
     if (!video) return; 
     
     setProcessing(true);
     
+    // Crear canvas para la captura
     const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = Math.min(video.videoWidth, 1280);
-    tempCanvas.height = Math.min(video.videoHeight, 720);
+    tempCanvas.width = video.videoWidth || 640;
+    tempCanvas.height = video.videoHeight || 480;
     const ctx = tempCanvas.getContext('2d');
     if (!ctx) {
       setProcessing(false);
       return;
     }
     
+    // Dibujar SOLO el video, sin la interfaz
     ctx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+    
+    // Guardar la foto
     setPhoto(tempCanvas.toDataURL('image/jpeg', 0.9));
     
-    // Detectar figura usando el canvas
+    // 🔥 Recortar al 50% CENTRAL para eliminar bordes
+    const cropSize = Math.min(tempCanvas.width, tempCanvas.height) * 0.5;
+    const cropX = (tempCanvas.width - cropSize) / 2;
+    const cropY = (tempCanvas.height - cropSize) / 2;
+    
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = cropSize;
+    cropCanvas.height = cropSize;
+    const cropCtx = cropCanvas.getContext('2d');
+    if (cropCtx) {
+      cropCtx.drawImage(tempCanvas, cropX, cropY, cropSize, cropSize, 0, 0, cropSize, cropSize);
+    }
+    
+    // Detectar figura usando el canvas recortado
     setTimeout(() => {
-      const result = detectFigureWithCanvas(tempCanvas);
-      console.log('Detección:', result);
+      const result = detectFigureWithCanvas(cropCanvas);
+      console.log('📸 Detección captura:', result);
       
       if (result.figure !== 'unknown' && result.confidence > 0.5) {
         setFigure(result.figure);
@@ -554,9 +585,22 @@ export default function MathLensApp() {
       }
       ctx.drawImage(image, 0, 0);
       
+      // Recortar al 50% central
+      const cropSize = Math.min(canvas.width, canvas.height) * 0.5;
+      const cropX = (canvas.width - cropSize) / 2;
+      const cropY = (canvas.height - cropSize) / 2;
+      
+      const cropCanvas = document.createElement('canvas');
+      cropCanvas.width = cropSize;
+      cropCanvas.height = cropSize;
+      const cropCtx = cropCanvas.getContext('2d');
+      if (cropCtx) {
+        cropCtx.drawImage(canvas, cropX, cropY, cropSize, cropSize, 0, 0, cropSize, cropSize);
+      }
+      
       setTimeout(() => {
-        const result = detectFigureWithCanvas(canvas);
-        console.log('Detección subida:', result);
+        const result = detectFigureWithCanvas(cropCanvas);
+        console.log('📸 Detección subida:', result);
         
         if (result.figure !== 'unknown' && result.confidence > 0.5) {
           setFigure(result.figure);
