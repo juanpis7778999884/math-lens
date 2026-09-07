@@ -42,9 +42,10 @@ function Scene({ active, k }: { active: MathFunction | (typeof figureInfo)[Figur
 
 const levels: { label: Difficulty; count: number }[] = [{ label: 'Fácil', count: 2 }, { label: 'Medio', count: 2 }, { label: 'Difícil', count: 2 }]
 
-// Función de detección MEJORADA - Enfocada en el CENTRO de la imagen
+// ✅ VERSIÓN ULTRA SIMPLIFICADA Y MÁS PRECISA
 function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figure; confidence: number } {
-  const size = 200
+  // Usar un tamaño más pequeño para análisis más rápido
+  const size = 150
   const analysisCanvas = document.createElement('canvas')
   analysisCanvas.width = size
   analysisCanvas.height = size
@@ -53,194 +54,156 @@ function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figu
     return { figure: 'unknown', confidence: 0 }
   }
   
-  // 🔥 CRUCIAL: Recortar al 45% CENTRAL para ignorar bordes y marco
-  const cropRatio = 0.45
+  // 🔥 Recortar SOLO el 40% CENTRAL (más agresivo para ignorar bordes)
+  const cropRatio = 0.40
   const cropW = sourceCanvas.width * cropRatio
   const cropH = sourceCanvas.height * cropRatio
   const cropX = (sourceCanvas.width - cropW) / 2
   const cropY = (sourceCanvas.height - cropH) / 2
   analysisContext.drawImage(sourceCanvas, cropX, cropY, cropW, cropH, 0, 0, size, size)
   
-  // Mejorar contraste
+  // Obtener datos de píxeles
   const imageData = analysisContext.getImageData(0, 0, size, size)
   const data = imageData.data
+  
+  // Convertir a escala de grises y binarizar con umbral adaptativo
+  const grays = new Float32Array(size * size)
   for (let i = 0; i < data.length; i += 4) {
     const avg = (data[i] + data[i+1] + data[i+2]) / 3
-    const enhanced = Math.min(255, Math.max(0, (avg - 20) * 1.8))
-    data[i] = data[i+1] = data[i+2] = enhanced
+    grays[i / 4] = avg
   }
-  analysisContext.putImageData(imageData, 0, 0)
   
-  const pixels = analysisContext.getImageData(0, 0, size, size).data
-  const grays = new Float32Array(size * size)
-  for (let i = 0; i < pixels.length; i += 4) grays[i / 4] = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2]
-  
-  const mean = grays.reduce((sum, value) => sum + value, 0) / grays.length
-  const variance = grays.reduce((sum, value) => sum + (value - mean) ** 2, 0) / grays.length
-  
-  if (variance < 40) { return { figure: 'unknown', confidence: 0 } }
-
-  // Detección de bordes con Sobel
-  const gx = [-1, 0, 1, -2, 0, 2, -1, 0, 1]
-  const gy = [-1, -2, -1, 0, 0, 0, 1, 2, 1]
-  const edges = new Float32Array(size * size)
-  let maxEdge = 0
-  for (let y = 1; y < size - 1; y++) {
-    for (let x = 1; x < size - 1; x++) {
-      let sx = 0; let sy = 0; let k = 0
-      for (let ky = -1; ky <= 1; ky++) for (let kx = -1; kx <= 1; kx++) { 
-        const v = grays[(y + ky) * size + (x + kx)]
-        sx += v * gx[k]
-        sy += v * gy[k]
-        k++ 
-      }
-      const mag = Math.sqrt(sx * sx + sy * sy)
-      edges[y * size + x] = mag
-      if (mag > maxEdge) maxEdge = mag
+  // Calcular umbral Otsu simplificado
+  let sum = 0, sumB = 0, wB = 0, wF = 0, varBetween = 0, maxVar = 0, threshold = 128
+  const histogram = new Array(256).fill(0)
+  for (let i = 0; i < grays.length; i++) {
+    histogram[Math.floor(grays[i])]++
+  }
+  for (let i = 0; i < 256; i++) {
+    sum += i * histogram[i]
+  }
+  let total = grays.length
+  for (let i = 0; i < 256; i++) {
+    wB += histogram[i]
+    if (wB === 0) continue
+    wF = total - wB
+    if (wF === 0) break
+    sumB += i * histogram[i]
+    let mB = sumB / wB
+    let mF = (sum - sumB) / wF
+    varBetween = wB * wF * (mB - mF) * (mB - mF)
+    if (varBetween > maxVar) {
+      maxVar = varBetween
+      threshold = i
     }
   }
   
-  if (maxEdge < 30) { return { figure: 'unknown', confidence: 0 } }
+  // Binarizar
+  const binary = new Float32Array(size * size)
+  for (let i = 0; i < grays.length; i++) {
+    binary[i] = grays[i] > threshold ? 255 : 0
+  }
   
-  const edgeThreshold = Math.max(25, maxEdge * 0.08)
-  let edgeMask: boolean[] = new Array(size * size)
-  for (let i = 0; i < edges.length; i++) edgeMask[i] = edges[i] > edgeThreshold
+  // Encontrar el objeto más grande en el centro
+  const visited = new Uint8Array(size * size)
+  let maxArea = 0
+  let bestObj = { minX: size, maxX: 0, minY: size, maxY: 0, points: 0 }
   
-  // Dilatar bordes
-  const dilate = (mask: boolean[]): boolean[] => {
-    const out = new Array(size * size).fill(false)
-    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-      const i = y * size + x
-      if (!mask[i]) continue
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-        const ny = y + dy; const nx = x + dx
-        if (ny >= 0 && ny < size && nx >= 0 && nx < size) out[ny * size + nx] = true
+  // Buscar objetos conectados (solo en el centro)
+  const centerStart = Math.floor(size * 0.3)
+  const centerEnd = Math.floor(size * 0.7)
+  
+  for (let y = centerStart; y < centerEnd; y++) {
+    for (let x = centerStart; x < centerEnd; x++) {
+      const idx = y * size + x
+      if (visited[idx] || binary[idx] === 0) continue
+      
+      // BFS para encontrar objeto
+      const queue: number[] = [idx]
+      visited[idx] = 1
+      let area = 0
+      let minX = size, maxX = 0, minY = size, maxY = 0
+      
+      while (queue.length > 0) {
+        const current = queue.shift()!
+        const cx = current % size
+        const cy = Math.floor(current / size)
+        area++
+        minX = Math.min(minX, cx)
+        maxX = Math.max(maxX, cx)
+        minY = Math.min(minY, cy)
+        maxY = Math.max(maxY, cy)
+        
+        // Revisar vecinos (4-direcciones)
+        const neighbors = [
+          current - 1, current + 1,
+          current - size, current + size
+        ]
+        for (const n of neighbors) {
+          if (n < 0 || n >= size * size) continue
+          const nx = n % size
+          const ny = Math.floor(n / size)
+          if (nx < 0 || nx >= size || ny < 0 || ny >= size) continue
+          if (!visited[n] && binary[n] > 0) {
+            visited[n] = 1
+            queue.push(n)
+          }
+        }
+      }
+      
+      // Solo considerar objetos con área razonable
+      if (area > 50 && area > maxArea) {
+        maxArea = area
+        bestObj = { minX, maxX, minY, maxY, points: area }
       }
     }
-    return out
-  }
-  edgeMask = dilate(edgeMask)
-
-  // Flood-fill
-  const reached = new Array(size * size).fill(false)
-  const stack: number[] = []
-  for (let x = 0; x < size; x++) stack.push(x, (size - 1) * size + x)
-  for (let y = 0; y < size; y++) stack.push(y * size, y * size + size - 1)
-  while (stack.length) {
-    const index = stack.pop()!
-    if (index < 0 || index >= size * size || reached[index] || edgeMask[index]) continue
-    reached[index] = true
-    const x = index % size; const y = Math.floor(index / size)
-    if (x > 0) stack.push(index - 1)
-    if (x < size - 1) stack.push(index + 1)
-    if (y > 0) stack.push(index - size)
-    if (y < size - 1) stack.push(index + size)
   }
   
-  const filled = edgeMask.map((isEdge, index) => isEdge || !reached[index])
-  const points = filled.flatMap((isObject, index) => isObject ? [{ x: index % size, y: Math.floor(index / size) }] : [])
-  
-  if (points.length < 30 || points.length > size * size * 0.92) { 
+  // Si no se encontró objeto, desconocido
+  if (maxArea < 30) {
     return { figure: 'unknown', confidence: 0 }
   }
   
-  const minX = Math.min(...points.map(p => p.x))
-  const maxX = Math.max(...points.map(p => p.x))
-  const minY = Math.min(...points.map(p => p.y))
-  const maxY = Math.max(...points.map(p => p.y))
-  const boxArea = (maxX - minX + 1) * (maxY - minY + 1)
-  const extent = points.length / boxArea
-
-  // Contar vértices
-  const idx = (x: number, y: number) => y * size + x
-  const inside = (x: number, y: number) => x >= 0 && x < size && y >= 0 && y < size && filled[idx(x, y)]
-  let start: { x: number; y: number } | null = null
-  outer: for (let y = minY; y <= maxY; y++) { 
-    for (let x = minX; x <= maxX; x++) { 
-      if (inside(x, y)) { start = { x, y }; break outer } 
-    } 
-  }
+  const { minX, maxX, minY, maxY, points } = bestObj
+  const objWidth = maxX - minX + 1
+  const objHeight = maxY - minY + 1
+  const aspectRatio = objWidth / objHeight
+  const extent = points / (objWidth * objHeight)
   
-  let corners = 0
-  if (start) {
-    const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]]
-    const contour: { x: number; y: number }[] = [start]
-    let current = start
-    let backtrack = 6
-    let guard = 0
-    while (guard++ < 6000) {
-      let moved = false
-      for (let k = 0; k < 8; k++) {
-        const d = dirs[(backtrack + k) % 8]
-        const nx = current.x + d[0]
-        const ny = current.y + d[1]
-        if (inside(nx, ny)) { 
-          current = { x: nx, y: ny }
-          backtrack = (backtrack + k + 5) % 8
-          contour.push(current)
-          moved = true
-          break 
-        }
-      }
-      if (!moved || (current.x === start.x && current.y === start.y && contour.length > 4)) break
-    }
-    
-    const step = Math.max(3, Math.floor(contour.length / 60))
-    const sample = contour.filter((_, i) => i % step === 0)
-    const angles = sample.map((point, i) => {
-      const prev = sample[(i - 1 + sample.length) % sample.length]
-      const next = sample[(i + 1) % sample.length]
-      const v1x = point.x - prev.x
-      const v1y = point.y - prev.y
-      const v2x = next.x - point.x
-      const v2y = next.y - point.y
-      const dot = v1x * v2x + v1y * v2y
-      const cross = v1x * v2y - v1y * v2x
-      return Math.atan2(Math.abs(cross), dot) * (180 / Math.PI)
-    })
-    
-    for (let i = 0; i < angles.length; i++) {
-      const prev = angles[(i - 1 + angles.length) % angles.length]
-      const next = angles[(i + 1) % angles.length]
-      if (angles[i] > 18 && angles[i] >= prev && angles[i] >= next) corners++
-    }
-  }
-
-  // Clasificación MEJORADA - Más precisa
+  // 🔥 CLASIFICACIÓN MEJORADA
   let detectedFigure: Figure = 'unknown'
   let confidence = 0
   
-  // Si tiene muy pocas esquinas, es un círculo
-  if (corners <= 1) {
+  // 1. Círculo: aspect ratio cercano a 1 y extent cercano a 0.78
+  if (Math.abs(aspectRatio - 1) < 0.25 && extent > 0.65 && extent < 0.88) {
     detectedFigure = 'circle'
     confidence = 0.85
-  } 
-  // Si tiene exactamente 3 esquinas, es un triángulo
-  else if (corners === 3) {
-    detectedFigure = 'triangle'
-    confidence = 0.85
-  } 
-  // Si tiene 4 o más esquinas, es un rectángulo
-  else if (corners >= 4) {
+  }
+  // 2. Rectángulo: aspect ratio puede variar, extent alto
+  else if (extent > 0.85 && (aspectRatio > 0.6 && aspectRatio < 2.0)) {
     detectedFigure = 'rectangle'
-    confidence = 0.85
-  } 
-  // Fallback: usar extent
+    confidence = 0.80
+  }
+  // 3. Triángulo: extent bajo, aspect ratio variable
+  else if (extent < 0.65 && extent > 0.3 && (aspectRatio > 0.4 && aspectRatio < 2.5)) {
+    detectedFigure = 'triangle'
+    confidence = 0.75
+  }
+  // Fallback: usar el extent
   else {
     const references: [Figure, number][] = [
       ['circle', 0.78], 
-      ['rectangle', 0.94], 
+      ['rectangle', 0.92], 
       ['triangle', 0.5]
     ]
     const best = references.reduce((closest, current) => 
       Math.abs(current[1] - extent) < Math.abs(closest[1] - extent) ? current : closest
     )
     detectedFigure = best[0]
-    confidence = 0.6
+    confidence = 0.5
   }
   
-  // Log para debugging
-  console.log(`🔍 Detección: ${detectedFigure} | Esquinas: ${corners} | Extent: ${extent.toFixed(2)} | Confianza: ${(confidence * 100).toFixed(0)}%`)
+  console.log(`🔍 Detección: ${detectedFigure} | Área: ${points} | Extent: ${extent.toFixed(2)} | Aspect: ${aspectRatio.toFixed(2)} | Conf: ${(confidence * 100).toFixed(0)}%`)
   
   return { figure: detectedFigure, confidence }
 }
@@ -514,14 +477,12 @@ export default function MathLensApp() {
   
   const active = figure !== 'unknown' ? figureInfo[figure] : functions.filter(f => f.difficulty === level)[index % 2]
 
-  // Captura MEJORADA - Solo el centro de la imagen
   const captureFigure = () => { 
     const video = videoRef.current; 
     if (!video) return; 
     
     setProcessing(true);
     
-    // Crear canvas para la captura
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = video.videoWidth || 640;
     tempCanvas.height = video.videoHeight || 480;
@@ -531,14 +492,11 @@ export default function MathLensApp() {
       return;
     }
     
-    // Dibujar SOLO el video, sin la interfaz
     ctx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
-    
-    // Guardar la foto
     setPhoto(tempCanvas.toDataURL('image/jpeg', 0.9));
     
-    // 🔥 Recortar al 50% CENTRAL para eliminar bordes
-    const cropSize = Math.min(tempCanvas.width, tempCanvas.height) * 0.5;
+    // 🔥 Recortar SOLO el 40% CENTRAL
+    const cropSize = Math.min(tempCanvas.width, tempCanvas.height) * 0.40;
     const cropX = (tempCanvas.width - cropSize) / 2;
     const cropY = (tempCanvas.height - cropSize) / 2;
     
@@ -550,12 +508,11 @@ export default function MathLensApp() {
       cropCtx.drawImage(tempCanvas, cropX, cropY, cropSize, cropSize, 0, 0, cropSize, cropSize);
     }
     
-    // Detectar figura usando el canvas recortado
     setTimeout(() => {
       const result = detectFigureWithCanvas(cropCanvas);
       console.log('📸 Detección captura:', result);
       
-      if (result.figure !== 'unknown' && result.confidence > 0.5) {
+      if (result.figure !== 'unknown' && result.confidence > 0.4) {
         setFigure(result.figure);
         setConfidence(result.confidence);
       } else {
@@ -563,7 +520,7 @@ export default function MathLensApp() {
         setConfidence(0);
       }
       setProcessing(false);
-    }, 100);
+    }, 50);
     
     stopCamera();
   }
@@ -585,8 +542,7 @@ export default function MathLensApp() {
       }
       ctx.drawImage(image, 0, 0);
       
-      // Recortar al 50% central
-      const cropSize = Math.min(canvas.width, canvas.height) * 0.5;
+      const cropSize = Math.min(canvas.width, canvas.height) * 0.40;
       const cropX = (canvas.width - cropSize) / 2;
       const cropY = (canvas.height - cropSize) / 2;
       
@@ -602,7 +558,7 @@ export default function MathLensApp() {
         const result = detectFigureWithCanvas(cropCanvas);
         console.log('📸 Detección subida:', result);
         
-        if (result.figure !== 'unknown' && result.confidence > 0.5) {
+        if (result.figure !== 'unknown' && result.confidence > 0.4) {
           setFigure(result.figure);
           setConfidence(result.confidence);
         } else {
@@ -610,7 +566,7 @@ export default function MathLensApp() {
           setConfidence(0);
         }
         setProcessing(false);
-      }, 100);
+      }, 50);
       
       URL.revokeObjectURL(url);
     }; 
