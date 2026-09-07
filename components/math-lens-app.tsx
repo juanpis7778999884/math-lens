@@ -1,6 +1,5 @@
 'use client'
 
-import { OpenCVCanvas } from '@robomous/opencv-react';
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, PerspectiveCamera, Line } from '@react-three/drei'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -42,6 +41,195 @@ function Scene({ active, k }: { active: MathFunction | (typeof figureInfo)[Figur
 }
 
 const levels: { label: Difficulty; count: number }[] = [{ label: 'Fácil', count: 2 }, { label: 'Medio', count: 2 }, { label: 'Difícil', count: 2 }]
+
+// Función de detección mejorada SIN OpenCV (más confiable)
+function detectFigureWithCanvas(sourceCanvas: HTMLCanvasElement): { figure: Figure; confidence: number } {
+  const size = 200
+  const analysisCanvas = document.createElement('canvas')
+  analysisCanvas.width = size
+  analysisCanvas.height = size
+  const analysisContext = analysisCanvas.getContext('2d', { willReadFrequently: true })
+  if (!analysisContext || sourceCanvas.width === 0 || sourceCanvas.height === 0) { 
+    return { figure: 'unknown', confidence: 0 }
+  }
+  
+  // Recortar al 70% central
+  const cropRatio = 0.7
+  const cropW = sourceCanvas.width * cropRatio
+  const cropH = sourceCanvas.height * cropRatio
+  const cropX = (sourceCanvas.width - cropW) / 2
+  const cropY = (sourceCanvas.height - cropH) / 2
+  analysisContext.drawImage(sourceCanvas, cropX, cropY, cropW, cropH, 0, 0, size, size)
+  
+  // Mejorar contraste
+  const imageData = analysisContext.getImageData(0, 0, size, size)
+  const data = imageData.data
+  for (let i = 0; i < data.length; i += 4) {
+    const avg = (data[i] + data[i+1] + data[i+2]) / 3
+    const enhanced = Math.min(255, Math.max(0, (avg - 30) * 1.5))
+    data[i] = data[i+1] = data[i+2] = enhanced
+  }
+  analysisContext.putImageData(imageData, 0, 0)
+  
+  const pixels = analysisContext.getImageData(0, 0, size, size).data
+  const grays = new Float32Array(size * size)
+  for (let i = 0; i < pixels.length; i += 4) grays[i / 4] = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2]
+  
+  const mean = grays.reduce((sum, value) => sum + value, 0) / grays.length
+  const variance = grays.reduce((sum, value) => sum + (value - mean) ** 2, 0) / grays.length
+  
+  if (variance < 60) { return { figure: 'unknown', confidence: 0 } }
+
+  // Detección de bordes con Sobel
+  const gx = [-1, 0, 1, -2, 0, 2, -1, 0, 1]
+  const gy = [-1, -2, -1, 0, 0, 0, 1, 2, 1]
+  const edges = new Float32Array(size * size)
+  let maxEdge = 0
+  for (let y = 1; y < size - 1; y++) {
+    for (let x = 1; x < size - 1; x++) {
+      let sx = 0; let sy = 0; let k = 0
+      for (let ky = -1; ky <= 1; ky++) for (let kx = -1; kx <= 1; kx++) { 
+        const v = grays[(y + ky) * size + (x + kx)]
+        sx += v * gx[k]
+        sy += v * gy[k]
+        k++ 
+      }
+      const mag = Math.sqrt(sx * sx + sy * sy)
+      edges[y * size + x] = mag
+      if (mag > maxEdge) maxEdge = mag
+    }
+  }
+  
+  if (maxEdge < 40) { return { figure: 'unknown', confidence: 0 } }
+  
+  const edgeThreshold = Math.max(30, maxEdge * 0.1)
+  let edgeMask: boolean[] = new Array(size * size)
+  for (let i = 0; i < edges.length; i++) edgeMask[i] = edges[i] > edgeThreshold
+  
+  // Dilatar bordes
+  const dilate = (mask: boolean[]): boolean[] => {
+    const out = new Array(size * size).fill(false)
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const i = y * size + x
+      if (!mask[i]) continue
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const ny = y + dy; const nx = x + dx
+        if (ny >= 0 && ny < size && nx >= 0 && nx < size) out[ny * size + nx] = true
+      }
+    }
+    return out
+  }
+  edgeMask = dilate(edgeMask)
+
+  // Flood-fill
+  const reached = new Array(size * size).fill(false)
+  const stack: number[] = []
+  for (let x = 0; x < size; x++) stack.push(x, (size - 1) * size + x)
+  for (let y = 0; y < size; y++) stack.push(y * size, y * size + size - 1)
+  while (stack.length) {
+    const index = stack.pop()!
+    if (index < 0 || index >= size * size || reached[index] || edgeMask[index]) continue
+    reached[index] = true
+    const x = index % size; const y = Math.floor(index / size)
+    if (x > 0) stack.push(index - 1)
+    if (x < size - 1) stack.push(index + 1)
+    if (y > 0) stack.push(index - size)
+    if (y < size - 1) stack.push(index + size)
+  }
+  
+  const filled = edgeMask.map((isEdge, index) => isEdge || !reached[index])
+  const points = filled.flatMap((isObject, index) => isObject ? [{ x: index % size, y: Math.floor(index / size) }] : [])
+  
+  if (points.length < 60 || points.length > size * size * 0.92) { 
+    return { figure: 'unknown', confidence: 0 }
+  }
+  
+  const minX = Math.min(...points.map(p => p.x))
+  const maxX = Math.max(...points.map(p => p.x))
+  const minY = Math.min(...points.map(p => p.y))
+  const maxY = Math.max(...points.map(p => p.y))
+  const boxArea = (maxX - minX + 1) * (maxY - minY + 1)
+  const extent = points.length / boxArea
+
+  // Contar vértices
+  const idx = (x: number, y: number) => y * size + x
+  const inside = (x: number, y: number) => x >= 0 && x < size && y >= 0 && y < size && filled[idx(x, y)]
+  let start: { x: number; y: number } | null = null
+  outer: for (let y = minY; y <= maxY; y++) { 
+    for (let x = minX; x <= maxX; x++) { 
+      if (inside(x, y)) { start = { x, y }; break outer } 
+    } 
+  }
+  
+  let corners = 0
+  if (start) {
+    const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]]
+    const contour: { x: number; y: number }[] = [start]
+    let current = start
+    let backtrack = 6
+    let guard = 0
+    while (guard++ < 6000) {
+      let moved = false
+      for (let k = 0; k < 8; k++) {
+        const d = dirs[(backtrack + k) % 8]
+        const nx = current.x + d[0]
+        const ny = current.y + d[1]
+        if (inside(nx, ny)) { 
+          current = { x: nx, y: ny }
+          backtrack = (backtrack + k + 5) % 8
+          contour.push(current)
+          moved = true
+          break 
+        }
+      }
+      if (!moved || (current.x === start.x && current.y === start.y && contour.length > 4)) break
+    }
+    
+    const step = Math.max(3, Math.floor(contour.length / 60))
+    const sample = contour.filter((_, i) => i % step === 0)
+    const angles = sample.map((point, i) => {
+      const prev = sample[(i - 1 + sample.length) % sample.length]
+      const next = sample[(i + 1) % sample.length]
+      const v1x = point.x - prev.x
+      const v1y = point.y - prev.y
+      const v2x = next.x - point.x
+      const v2y = next.y - point.y
+      const dot = v1x * v2x + v1y * v2y
+      const cross = v1x * v2y - v1y * v2x
+      return Math.atan2(Math.abs(cross), dot) * (180 / Math.PI)
+    })
+    
+    for (let i = 0; i < angles.length; i++) {
+      const prev = angles[(i - 1 + angles.length) % angles.length]
+      const next = angles[(i + 1) % angles.length]
+      if (angles[i] > 20 && angles[i] >= prev && angles[i] >= next) corners++
+    }
+  }
+
+  // Clasificar
+  let detectedFigure: Figure = 'unknown'
+  let confidence = 0
+  
+  if (corners <= 1) {
+    detectedFigure = 'circle'
+    confidence = 0.85
+  } else if (corners === 3) {
+    detectedFigure = 'triangle'
+    confidence = 0.85
+  } else if (corners >= 4) {
+    detectedFigure = 'rectangle'
+    confidence = 0.85
+  } else {
+    const references: [Figure, number][] = [['circle', 0.78], ['rectangle', 0.94], ['triangle', 0.5]]
+    const best = references.reduce((closest, current) => 
+      Math.abs(current[1] - extent) < Math.abs(closest[1] - extent) ? current : closest
+    )
+    detectedFigure = best[0]
+    confidence = 0.7
+  }
+  
+  return { figure: detectedFigure, confidence }
+}
 
 function CameraPanel({ cameraOn, photo, videoRef, canvasRef, error, startCamera, stopCamera, captureFigure, processing }: { 
   cameraOn: boolean; 
@@ -271,7 +459,6 @@ export default function MathLensApp() {
   const videoRef = useRef<HTMLVideoElement>(null); 
   const canvasRef = useRef<HTMLCanvasElement>(null); 
   const streamRef = useRef<MediaStream | null>(null)
-  const openCvOutputRef = useRef<HTMLCanvasElement>(null);
   
   const [mode, setMode] = useState<'student' | 'teacher'>('student'); 
   const [cameraOn, setCameraOn] = useState(false); 
@@ -313,125 +500,39 @@ export default function MathLensApp() {
   
   const active = figure !== 'unknown' ? figureInfo[figure] : functions.filter(f => f.difficulty === level)[index % 2]
 
-  const handleOpenCVProcess = ({ canvas, cv, outputCanvas }: any) => {
-    setProcessing(true);
-    let src = null;
-    let gray = null;
-    let clahe = null;
-    let dst = null;
-    let edges = null;
-    let contours = null;
-    let hierarchy = null;
-    let approx = null;
-
-    try {
-      src = cv.imread(canvas);
-      gray = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-      
-      clahe = new cv.CLAHE(2.0, new cv.Size(8, 8));
-      dst = new cv.Mat();
-      clahe.apply(gray, dst);
-      
-      edges = new cv.Mat();
-      cv.Canny(dst, edges, 50, 150);
-      
-      contours = new cv.MatVector();
-      hierarchy = new cv.Mat();
-      cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-      
-      let detectedFigure: Figure = 'unknown';
-      let bestConfidence = 0;
-      
-      for (let i = 0; i < contours.size(); i++) {
-        let contour = contours.get(i);
-        let perimeter = cv.arcLength(contour, true);
-        approx = new cv.Mat();
-        cv.approxPolyDP(contour, approx, 0.04 * perimeter, true);
-        let vertices = approx.rows;
-        let area = cv.contourArea(contour);
-        
-        if (area < 100) continue;
-        
-        if (vertices === 3) {
-          detectedFigure = 'triangle';
-          bestConfidence = 0.9;
-          break;
-        } else if (vertices === 4) {
-          let rect = cv.boundingRect(contour);
-          let aspectRatio = rect.width / rect.height;
-          if (aspectRatio > 0.8 && aspectRatio < 1.2) {
-            detectedFigure = 'rectangle';
-            bestConfidence = 0.95;
-          } else {
-            detectedFigure = 'rectangle';
-            bestConfidence = 0.85;
-          }
-          break;
-        } else if (vertices > 8) {
-          let circularity = (perimeter * perimeter) / (4 * Math.PI * area);
-          if (circularity < 1.2) {
-            detectedFigure = 'circle';
-            bestConfidence = 0.9;
-            break;
-          }
-        }
-      }
-      
-      if (outputCanvas) {
-        cv.imshow(outputCanvas, dst);
-      }
-      
-      if (detectedFigure !== 'unknown' && bestConfidence > 0.7) {
-        setFigure(detectedFigure);
-        setConfidence(bestConfidence);
-      } else {
-        setFigure('unknown');
-        setConfidence(0);
-      }
-      
-    } catch (error) {
-      console.error('Error en detección OpenCV:', error);
-      setFigure('unknown');
-    } finally {
-      if (src) src.delete();
-      if (gray) gray.delete();
-      if (clahe) clahe.delete();
-      if (dst) dst.delete();
-      if (edges) edges.delete();
-      if (contours) contours.delete();
-      if (hierarchy) hierarchy.delete();
-      if (approx) approx.delete();
-      setProcessing(false);
-    }
-  };
-
+  // Función de captura mejorada
   const captureFigure = () => { 
     const video = videoRef.current; 
     if (!video) return; 
+    
+    setProcessing(true);
     
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = Math.min(video.videoWidth, 1280);
     tempCanvas.height = Math.min(video.videoHeight, 720);
     const ctx = tempCanvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      setProcessing(false);
+      return;
+    }
     
     ctx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
-    
     setPhoto(tempCanvas.toDataURL('image/jpeg', 0.9));
     
-    const openCvCanvas = document.createElement('canvas');
-    openCvCanvas.width = tempCanvas.width;
-    openCvCanvas.height = tempCanvas.height;
-    const openCvCtx = openCvCanvas.getContext('2d');
-    if (!openCvCtx) return;
-    openCvCtx.drawImage(tempCanvas, 0, 0);
-    
-    handleOpenCVProcess({ 
-      canvas: openCvCanvas, 
-      cv: (window as any).cv, 
-      outputCanvas: openCvOutputRef.current 
-    });
+    // Detectar figura usando el canvas
+    setTimeout(() => {
+      const result = detectFigureWithCanvas(tempCanvas);
+      console.log('Detección:', result);
+      
+      if (result.figure !== 'unknown' && result.confidence > 0.5) {
+        setFigure(result.figure);
+        setConfidence(result.confidence);
+      } else {
+        setFigure('unknown');
+        setConfidence(0);
+      }
+      setProcessing(false);
+    }, 100);
     
     stopCamera();
   }
@@ -439,20 +540,33 @@ export default function MathLensApp() {
   const uploadFigure = (file: File) => { 
     const url = URL.createObjectURL(file); 
     setPhoto(url); 
+    setProcessing(true);
+    
     const image = new Image(); 
     image.onload = () => { 
       const canvas = document.createElement('canvas');
       canvas.width = image.naturalWidth;
       canvas.height = image.naturalHeight;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) {
+        setProcessing(false);
+        return;
+      }
       ctx.drawImage(image, 0, 0);
       
-      handleOpenCVProcess({ 
-        canvas: canvas, 
-        cv: (window as any).cv, 
-        outputCanvas: openCvOutputRef.current 
-      });
+      setTimeout(() => {
+        const result = detectFigureWithCanvas(canvas);
+        console.log('Detección subida:', result);
+        
+        if (result.figure !== 'unknown' && result.confidence > 0.5) {
+          setFigure(result.figure);
+          setConfidence(result.confidence);
+        } else {
+          setFigure('unknown');
+          setConfidence(0);
+        }
+        setProcessing(false);
+      }, 100);
       
       URL.revokeObjectURL(url);
     }; 
@@ -574,8 +688,6 @@ export default function MathLensApp() {
 
   return (
     <main className="flex min-h-dvh flex-col bg-background text-foreground selection:bg-primary/30">
-      <canvas ref={openCvOutputRef} className="hidden" />
-      
       <header className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-background/95 px-3 py-2 backdrop-blur md:px-8 md:py-3">
         <div className="flex items-center gap-3">
           <div className="grid size-9 place-items-center rounded-lg bg-primary text-primary-foreground"><Sparkles className="size-4" /></div>
